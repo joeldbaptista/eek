@@ -18,7 +18,6 @@ static int pushn;
  *
  * Returns:
  *  - 0 on success (b is set).
- *  - 1 if interrupted by EINTR (caller may retry).
  *  - -1 on EOF.
  */
 static int
@@ -31,12 +30,14 @@ readbyte(int fd, unsigned char *b)
 		return 0;
 	}
 
-	n = read(fd, b, 1);
-	if (n == 0)
-		return -1;
-	if (n < 0) {
+	for (;;) {
+		n = read(fd, b, 1);
+		if (n == 0)
+			return -1;
+		if (n > 0)
+			break;
 		if (errno == EINTR)
-			return 1;
+			continue;
 		die("read: %s", strerror(errno));
 	}
 	return 0;
@@ -134,8 +135,6 @@ keyread(Term *t, Key *k)
 	rc = readbyte(t->fdin, &b);
 	if (rc < 0)
 		return -1;
-	if (rc == 1)
-		return 0;
 
 	if (b == 0x1b) {
 		rc = readbyte_timeout(t->fdin, &b1, 25);
@@ -196,39 +195,27 @@ keyread(Term *t, Key *k)
 	r = 0xfffd;
 	if ((b & 0xe0) == 0xc0) {
 		rc = readbyte(t->fdin, &b1);
-		if (rc == 1)
-			return 0;
 		if (rc < 0)
 			return -1;
 		if ((b1 & 0xc0) == 0x80)
 			r = ((b & 0x1f) << 6) | (b1 & 0x3f);
 	} else if ((b & 0xf0) == 0xe0) {
 		rc = readbyte(t->fdin, &b1);
-		if (rc == 1)
-			return 0;
 		if (rc < 0)
 			return -1;
 		rc = readbyte(t->fdin, &b2);
-		if (rc == 1)
-			return 0;
 		if (rc < 0)
 			return -1;
 		if ((b1 & 0xc0) == 0x80 && (b2 & 0xc0) == 0x80)
 			r = ((b & 0x0f) << 12) | ((b1 & 0x3f) << 6) | (b2 & 0x3f);
 	} else if ((b & 0xf8) == 0xf0) {
 		rc = readbyte(t->fdin, &b1);
-		if (rc == 1)
-			return 0;
 		if (rc < 0)
 			return -1;
 		rc = readbyte(t->fdin, &b2);
-		if (rc == 1)
-			return 0;
 		if (rc < 0)
 			return -1;
 		rc = readbyte(t->fdin, &b3);
-		if (rc == 1)
-			return 0;
 		if (rc < 0)
 			return -1;
 		if ((b1 & 0xc0) == 0x80 && (b2 & 0xc0) == 0x80 && (b3 & 0xc0) == 0x80)

@@ -4215,6 +4215,7 @@ draw(Eek *e)
 			if (nd == nil)
 				continue;
 			if (nd->split == 0) {
+				winclamp(e, nd->w);
 				winload(e, nd->w);
 				gutter = gutterwidth(e, rr.w);
 				numw = gutter ? gutter - 1 : 0;
@@ -5208,21 +5209,8 @@ main(int argc, char **argv)
 	for (;;) {
 		if (termresized()) {
 			termgetwinsz(&e.t);
-			/* Clamp all window cursors after a resize. */
-			{
-				long n;
-				Win **arr;
-				long i;
-				n = nwins(e.layout);
-				arr = n > 0 ? malloc((size_t)n * sizeof arr[0]) : nil;
-				if (arr != nil) {
-					i = 0;
-					collectwins(e.layout, arr, &i);
-					while (i-- > 0)
-						winclamp(&e, arr[i]);
-					free(arr);
-				}
-			}
+			/* Clamp the active window cursor after a resize. */
+			winclamp(&e, e.curwin);
 			normalfixcursor(&e);
 		}
 		/* Scroll the active window based on its viewport height. */
@@ -5241,21 +5229,6 @@ main(int argc, char **argv)
 			scroll(&e, cur.h);
 		}
 		winstore(&e);
-		/* Keep non-active window cursors in bounds after edits/undo. */
-		{
-			long n;
-			Win **arr;
-			long i;
-			n = nwins(e.layout);
-			arr = n > 0 ? malloc((size_t)n * sizeof arr[0]) : nil;
-			if (arr != nil) {
-				i = 0;
-				collectwins(e.layout, arr, &i);
-				while (i-- > 0)
-					winclamp(&e, arr[i]);
-				free(arr);
-			}
-		}
 		winload(&e, e.curwin);
 		draw(&e);
 		if (e.quit)
