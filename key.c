@@ -178,7 +178,7 @@ keyread(Term *t, Key *k)
 		}
 	}
 
-	if (b == '\r' || b == '\n') {
+	if (b == '\r') {
 		k->kind = Keyenter;
 		return 0;
 	}

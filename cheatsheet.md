@@ -164,6 +164,7 @@ Windows:
 
 - Horizontal split: `:split`
 - Vertical split: `:vsplit`
+- Move between splits: `Ctrl-h` `Ctrl-j` `Ctrl-k` `Ctrl-l`
 - Cycle active window: `Ctrl-w` then `w`
 - `:q` closes the active window when split
 

@@ -40,6 +40,13 @@ struct Rect {
 	int h;
 };
 
+enum {
+	Dirleft,
+	Dirdown,
+	Dirup,
+	Dirright,
+};
+
 typedef struct Undo Undo;
 struct Undo {
 	Buf b;       /* Snapshot of the full text buffer. */
@@ -165,6 +172,7 @@ static Node *findleaf(Node *n, Win *w, Node **parent, int *isleft);
 static int splitcur(Eek *e, int vertical);
 static int closecur(Eek *e);
 static int nextwin(Eek *e);
+static int focusdir(Eek *e, int dir);
 
 static int findfwd(Eek *e, long r, long n);
 static int subexec(Eek *e, char *line);
@@ -2464,6 +2472,145 @@ nextwin(Eek *e)
 	return 0;
 }
 
+static int
+overlap1d(int a0, int a1, int b0, int b1)
+{
+	int lo;
+	int hi;
+
+	if (a0 > a1) { int t = a0; a0 = a1; a1 = t; }
+	if (b0 > b1) { int t = b0; b0 = b1; b1 = t; }
+	lo = a0 > b0 ? a0 : b0;
+	hi = a1 < b1 ? a1 : b1;
+	if (hi <= lo)
+		return 0;
+	return hi - lo;
+}
+
+static int
+focusdir(Eek *e, int dir)
+{
+	Rect root;
+	Rect cur;
+	long textrows;
+	long n;
+	Win **arr;
+	long i;
+	Win *best;
+	long bestdist;
+	int bestov;
+	int pass;
+
+	if (e == nil || e->layout == nil || e->curwin == nil)
+		return -1;
+	if (nwins(e->layout) <= 1)
+		return 0;
+
+	textrows = e->t.row - 1;
+	if (textrows < 1)
+		textrows = 1;
+	root = (Rect){ 0, 0, e->t.col, (int)textrows };
+	cur = root;
+	if (!findrect(e->layout, e->curwin, root, &cur))
+		cur = root;
+
+	n = nwins(e->layout);
+	arr = malloc((size_t)n * sizeof arr[0]);
+	if (arr == nil)
+		return -1;
+	i = 0;
+	collectwins(e->layout, arr, &i);
+
+	best = nil;
+	bestdist = 0;
+	bestov = -1;
+
+	for (pass = 0; pass < 2; pass++) {
+		best = nil;
+		bestov = -1;
+		for (n = 0; n < i; n++) {
+			Rect r;
+			long dist;
+			int ov;
+			int ok;
+			int cx0, cx1, cy0, cy1;
+			int rx0, rx1, ry0, ry1;
+
+			if (arr[n] == e->curwin)
+				continue;
+			r = root;
+			if (!findrect(e->layout, arr[n], root, &r))
+				continue;
+			if (r.w <= 0 || r.h <= 0)
+				continue;
+
+			cx0 = cur.x;
+			cx1 = cur.x + cur.w;
+			cy0 = cur.y;
+			cy1 = cur.y + cur.h;
+			rx0 = r.x;
+			rx1 = r.x + r.w;
+			ry0 = r.y;
+			ry1 = r.y + r.h;
+
+			ok = 0;
+			dist = 0;
+			ov = 0;
+			switch (dir) {
+			case Dirleft:
+				if (rx1 <= cx0) {
+					ok = 1;
+					dist = cx0 - rx1;
+					ov = overlap1d(cy0, cy1, ry0, ry1);
+				}
+				break;
+			case Dirright:
+				if (rx0 >= cx1) {
+					ok = 1;
+					dist = rx0 - cx1;
+					ov = overlap1d(cy0, cy1, ry0, ry1);
+				}
+				break;
+			case Dirup:
+				if (ry1 <= cy0) {
+					ok = 1;
+					dist = cy0 - ry1;
+					ov = overlap1d(cx0, cx1, rx0, rx1);
+				}
+				break;
+			case Dirdown:
+				if (ry0 >= cy1) {
+					ok = 1;
+					dist = ry0 - cy1;
+					ov = overlap1d(cx0, cx1, rx0, rx1);
+				}
+				break;
+			default:
+				break;
+			}
+			if (!ok)
+				continue;
+			if (pass == 0 && ov <= 0)
+				continue;
+			if (best == nil || dist < bestdist || (dist == bestdist && ov > bestov)) {
+				best = arr[n];
+				bestdist = dist;
+				bestov = ov;
+			}
+		}
+		if (best != nil)
+			break;
+	}
+
+	free(arr);
+	if (best == nil)
+		return 0;
+	winstore(e);
+	e->curwin = best;
+	winload(e, e->curwin);
+	return 0;
+}
+
 /*
  * drawstatus draws the status line (mode, messages, filename, cursor).
  *
@@ -4385,6 +4532,19 @@ main(int argc, char **argv)
 				continue;
 			}
 			if (k.kind == Keyrune) {
+				if (k.value == '\n') {
+					/* Some terminals send '\n' for Enter; keep cmdline usable. */
+					if (e.cmdprefix == '/')
+						(void)searchexec(&e);
+					else
+						(void)cmdexec(&e);
+					e.cmdrange = 0;
+					e.cmdkeepvisual = 0;
+					setmode(&e, Modenormal);
+					cmdclear(&e);
+					e.cmdprefix = ':';
+					continue;
+				}
 				if (k.value >= 0x20 && k.value < 0x7f) {
 					if (e.cmdn + 1 < (long)sizeof e.cmd)
 						e.cmd[e.cmdn++] = (char)k.value;
@@ -4427,6 +4587,10 @@ main(int argc, char **argv)
 				char s[8];
 				long n;
 
+				if (k.value == '\n') {
+					(void)insertnl(&e);
+					break;
+				}
 				if (k.value == '\t') {
 					s[0] = '\t';
 					(void)insertbytes(&e, s, 1);
@@ -4442,6 +4606,46 @@ main(int argc, char **argv)
 				break;
 			}
 			continue;
+		}
+
+		/*
+		 * Ctrl+hjkl window navigation.
+		 *
+		 * Handle this before operator-pending logic so it always works.
+		 */
+		if (nwins(e.layout) > 1) {
+			int did;
+			int dir;
+
+			did = 0;
+			dir = -1;
+			if (k.kind == Keybackspace) {
+				/* Many terminals send DEL for Ctrl-H / Backspace. */
+				did = 1;
+				dir = Dirleft;
+			}
+			if (k.kind == Keyrune) {
+				if (k.value == 0x08) { did = 1; dir = Dirleft; }
+				else if (k.value == '\n') { did = 1; dir = Dirdown; }
+				else if (k.value == 0x0b) { did = 1; dir = Dirup; }
+				else if (k.value == 0x0c) { did = 1; dir = Dirright; }
+			}
+			if (did && dir >= 0) {
+				(void)focusdir(&e, dir);
+				e.dpending = 0;
+				e.cpending = 0;
+				e.ypending = 0;
+				e.fpending = 0;
+				e.fcount = 0;
+				e.tipending = 0;
+				e.vtipending = 0;
+				e.lastnormalrune = 0;
+				e.lastmotioncount = 0;
+				e.seqcount = 0;
+				e.count = 0;
+				e.opcount = 0;
+				continue;
+			}
 		}
 
 		if (k.kind == Keyesc) {
