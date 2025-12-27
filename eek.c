@@ -188,6 +188,7 @@ static Win *winnewfrom(Eek *e);
 static void winload(Eek *e, Win *w);
 static void winstore(Eek *e);
 static void winclamp(Eek *e, Win *w);
+static long curwinrows(Eek *e);
 static long nwins(Node *n);
 static void collectwins(Node *n, Win **out, long *i);
 static int findrect(Node *n, Win *w, Rect r, Rect *out);
@@ -1704,6 +1705,27 @@ winclamp(Eek *e, Win *w)
 		w->cx = len;
 	if (w->rowoff < 0)
 		w->rowoff = 0;
+}
+
+static long
+curwinrows(Eek *e)
+{
+	Rect root;
+	Rect cur;
+	long textrows;
+
+	if (e == nil)
+		return 1;
+	textrows = e->t.row - 1;
+	if (textrows < 1)
+		textrows = 1;
+	root = (Rect){ 0, 0, e->t.col, (int)textrows };
+	cur = root;
+	if (!findrect(e->layout, e->curwin, root, &cur))
+		cur = root;
+	if (cur.h < 1)
+		return 1;
+	return cur.h;
 }
 
 static Node *
@@ -6103,6 +6125,25 @@ main(int argc, char **argv)
 				repeat(&e, mover, countval(e.count));
 				e.count = 0;
 				break;
+			case '(':
+			case ')': {
+				long npage;
+				long rows;
+				long delta;
+
+				npage = countval(e.count);
+				rows = curwinrows(&e);
+				delta = rows * npage;
+				if (k.value == '(')
+					delta = -delta;
+				e.cy = clamp(e.cy + delta, 0, e.b.nline > 0 ? e.b.nline - 1 : 0);
+				e.rowoff = e.rowoff + delta;
+				if (e.rowoff < 0)
+					e.rowoff = 0;
+				e.count = 0;
+				e.opcount = 0;
+				break;
+			}
 			case '0': e.cx = 0; break;
 			case '$': e.cx = linelen(&e, e.cy); break;
 			case 'w': repeat(&e, movew, countval(e.count)); e.count = 0; break;
