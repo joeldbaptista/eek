@@ -131,6 +131,8 @@ struct Eek {
 	long ypending;       /* Pending yank operator ('y' has been typed). */
 	long fpending;       /* Pending find-char motion ('f' has been typed). */
 	long fcount;         /* Count for pending find motion (nth occurrence). */
+	long fmode;          /* Pending find mode: 'f','F','t','T'. */
+	long fop;            /* Pending operator for find: 0,'d','c','y'. */
 	long tipending;      /* Pending text-object modifier (e.g. 'di' waiting for delimiter). */
 	long tiop;           /* Text-object operator that is pending ('d' or 'c'). */
 	long vax;            /* VISUAL anchor x (byte offset). */
@@ -206,6 +208,7 @@ static int tabclose(Eek *e, int force);
 static int tabmove(Eek *e, long to);
 
 static int findfwd(Eek *e, long r, long n);
+static int findbwd(Eek *e, long r, long n);
 static int subexec(Eek *e, char *line);
 static void vsellines(Eek *e, long *y0, long *y1);
 
@@ -265,6 +268,52 @@ findfwd(Eek *e, long r, long n)
 		}
 		if (x >= l->n)
 			break;
+	}
+	return -1;
+}
+
+/*
+ * findbwd moves the cursor to the previous occurrence of rune r on the current
+ * line, searching backward.
+ */
+static int
+findbwd(Eek *e, long r, long n)
+{
+	Line *l;
+	char pat[8];
+	long patn;
+	long x;
+
+	if (e == nil)
+		return -1;
+	if (n <= 0)
+		n = 1;
+	if (r < 0x20)
+		return -1;
+
+	l = bufgetline(&e->b, e->cy);
+	if (l == nil)
+		return -1;
+	patn = utf8enc(r, pat);
+	if (patn <= 0)
+		return -1;
+	if (patn > l->n)
+		return -1;
+	if (e->cx <= 0)
+		return -1;
+
+	x = prevutf8(e, e->cy, e->cx);
+	for (;;) {
+		if (x + patn <= l->n && memcmp(l->s + x, pat, (size_t)patn) == 0) {
+			n--;
+			if (n == 0) {
+				e->cx = x;
+				return 0;
+			}
+		}
+		if (x <= 0)
+			break;
+		x = prevutf8(e, e->cy, x);
 	}
 	return -1;
 }
@@ -5385,11 +5434,106 @@ main(int argc, char **argv)
 			e.fpending = 0;
 			if (k.kind == Keyrune) {
 				long n;
+				long mode;
+				long op;
+				long origcx;
+				long pos;
+				long posend;
+				long curend;
+				long x0, x1;
 
 				n = e.fcount;
+				mode = e.fmode;
+				op = e.fop;
 				e.fcount = 0;
-				if (findfwd(&e, k.value, n) < 0)
+				e.fmode = 0;
+				e.fop = 0;
+
+				origcx = e.cx;
+				pos = -1;
+				switch (mode) {
+				case 'f':
+				case 't':
+					if (findfwd(&e, k.value, n) < 0)
+						pos = -1;
+					else
+						pos = e.cx;
+					break;
+				case 'F':
+				case 'T':
+					if (findbwd(&e, k.value, n) < 0)
+						pos = -1;
+					else
+						pos = e.cx;
+					break;
+				default:
+					pos = -1;
+					break;
+				}
+
+				if (pos < 0) {
 					setmsg(&e, "Not found: %lc", (long)k.value);
+					e.cx = origcx;
+					goto finddone;
+				}
+				posend = nextutf8(&e, e.cy, pos);
+				curend = nextutf8(&e, e.cy, origcx);
+
+				if (op == 0) {
+					switch (mode) {
+					case 'f':
+					case 'F':
+						e.cx = pos;
+						break;
+					case 't':
+						e.cx = prevutf8(&e, e.cy, pos);
+						break;
+					case 'T':
+						e.cx = posend;
+						break;
+					default:
+						e.cx = origcx;
+						break;
+					}
+				} else {
+					/* Operator-pending applies to current line only. */
+					e.cx = origcx;
+					x0 = origcx;
+					x1 = origcx;
+					switch (mode) {
+					case 'f': /* through */
+						x0 = origcx;
+						x1 = posend;
+						break;
+					case 't': /* until */
+						x0 = origcx;
+						x1 = pos;
+						break;
+					case 'F': /* backward through */
+						x0 = pos;
+						x1 = curend;
+						break;
+					case 'T': /* backward until */
+						x0 = posend;
+						x1 = curend;
+						break;
+					default:
+						break;
+					}
+					if (x0 != x1) {
+						if (op == 'y') {
+							(void)yankrange(&e, e.cy, x0, e.cy, x1);
+							/* Preserve cursor. */
+							e.cx = origcx;
+						} else {
+							(void)delrange(&e, e.cy, x0, e.cy, x1, 1);
+							if (op == 'c')
+								setmode(&e, Modeinsert);
+						}
+					}
+				}
+			finddone:
+				;
 			}
 			e.lastnormalrune = 0;
 			e.lastmotioncount = 0;
@@ -5429,6 +5573,15 @@ main(int argc, char **argv)
 				case 'e':
 					(void)delendwords(&e, total);
 					break;
+				case 'f':
+				case 't':
+				case 'F':
+				case 'T':
+					e.fpending = 1;
+					e.fcount = total;
+					e.fmode = k.value;
+					e.fop = 'd';
+					continue;
 				default:
 					setmsg(&e, "Unknown d%lc", (long)k.value);
 					break;
@@ -5512,6 +5665,15 @@ main(int argc, char **argv)
 					(void)yankrange(&e, e.cy, e.cx, e.cy, len);
 					break;
 				}
+				case 'f':
+				case 't':
+				case 'F':
+				case 'T':
+					e.fpending = 1;
+					e.fcount = total;
+					e.fmode = k.value;
+					e.fop = 'y';
+					continue;
 				default:
 					setmsg(&e, "Unknown y%lc", (long)k.value);
 					break;
@@ -5545,6 +5707,15 @@ main(int argc, char **argv)
 					(void)delwords(&e, total);
 					setmode(&e, Modeinsert);
 					break;
+				case 'f':
+				case 't':
+				case 'F':
+				case 'T':
+					e.fpending = 1;
+					e.fcount = total;
+					e.fmode = k.value;
+					e.fop = 'c';
+					continue;
 				case 'i':
 					e.tipending = 1;
 					e.tiop = 'c';
@@ -5830,6 +6001,41 @@ main(int argc, char **argv)
 			case 'f':
 				e.fpending = 1;
 				e.fcount = countval(e.count);
+				e.fmode = 'f';
+				e.fop = 0;
+				e.count = 0;
+				e.opcount = 0;
+				e.lastnormalrune = 0;
+				e.lastmotioncount = 0;
+				e.seqcount = 0;
+				break;
+			case 'F':
+				e.fpending = 1;
+				e.fcount = countval(e.count);
+				e.fmode = 'F';
+				e.fop = 0;
+				e.count = 0;
+				e.opcount = 0;
+				e.lastnormalrune = 0;
+				e.lastmotioncount = 0;
+				e.seqcount = 0;
+				break;
+			case 't':
+				e.fpending = 1;
+				e.fcount = countval(e.count);
+				e.fmode = 't';
+				e.fop = 0;
+				e.count = 0;
+				e.opcount = 0;
+				e.lastnormalrune = 0;
+				e.lastmotioncount = 0;
+				e.seqcount = 0;
+				break;
+			case 'T':
+				e.fpending = 1;
+				e.fcount = countval(e.count);
+				e.fmode = 'T';
+				e.fop = 0;
 				e.count = 0;
 				e.opcount = 0;
 				e.lastnormalrune = 0;
