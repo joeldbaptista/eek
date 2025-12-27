@@ -66,6 +66,17 @@ Find on current line:
 
 - Find next character on the line: `f{char}` (example: `f.` / `f,`)
 - Find nth occurrence: `nf{char}` (example: `3f.`)
+- Find previous character on the line: `F{char}`
+- Find until character (forward/backward): `t{char}` / `T{char}`
+
+Operator + find/until (current line):
+
+- Delete until/through (forward): `dt{char}` / `df{char}`
+- Delete until/through (backward): `dT{char}` / `dF{char}`
+- Change until/through (forward): `ct{char}` / `cf{char}`
+- Change until/through (backward): `cT{char}` / `cF{char}`
+- Yank until/through (forward): `yt{char}` / `yf{char}`
+- Yank until/through (backward): `yT{char}` / `yF{char}`
 
 ---
 
@@ -200,6 +211,11 @@ Write / quit:
 - Quit: `:q`
 - Force quit: `:q!`
 - Write and quit: `:wq`
+
+Edit file:
+
+- Edit/open: `:e filename` (alias: `:edit filename`)
+- Force edit (discard changes): `:e! filename`
 
 Read file into buffer:
 

@@ -78,7 +78,14 @@ eek implements a small subset of vi/ex style command-line commands.
 - `:tabn` / `:tabp` switch to next/previous tab (aliases: `:tabnext` / `:tabprevious`).
 - `gt` / `gT` switch to next/previous tab in NORMAL mode.
 - `:tabclose` closes the current tab (use `:tabclose!` to force-close if dirty).
+- `:tabonly` closes all other tabs (use `:tabonly!` to force-close if dirty).
 - When only one window exists, `:q` closes the current tab if multiple tabs exist.
+
+### Edit file (`:e`)
+
+- `:e filename` opens `filename` in the current tab.
+- If `filename` does not exist, `:e filename` opens an empty buffer and sets the name.
+- Use `:e! filename` to discard unsaved changes in the current tab.
 
 ### Substitute (`:s`)
 
