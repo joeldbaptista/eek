@@ -2,29 +2,146 @@ typedef struct Line Line;
 typedef struct Buf Buf;
 
 struct Line {
-	char *s;
-	long n;
-	long cap;
+	char *s;   /* Line contents as raw bytes (typically UTF-8). */
+	long n;    /* Number of bytes currently used in s. */
+	long cap;  /* Allocated capacity of s in bytes. */
 };
 
 struct Buf {
-	Line *line;
-	long nline;
-	long cap;
+	Line *line;  /* Dynamic array of lines. */
+	long nline;  /* Number of lines currently in use. */
+	long cap;    /* Allocated capacity of line[] in elements. */
 };
 
+/*
+ * bufinit initializes an empty buffer.
+ *
+ * Parameters:
+ *  - b: buffer to initialize.
+ *
+ * Returns:
+ *  - void.
+ */
 void bufinit(Buf *b);
+
+/*
+ * buffree releases all memory owned by the buffer and resets it.
+ *
+ * Parameters:
+ *  - b: buffer to free.
+ *
+ * Returns:
+ *  - void.
+ */
 void buffree(Buf *b);
 
+/*
+ * bufcopy deep-copies src into dst.
+ *
+ * Parameters:
+ *  - dst: destination buffer (previous contents are freed).
+ *  - src: source buffer.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on allocation failure or invalid arguments.
+ */
 int bufcopy(Buf *dst, Buf *src);
 
+/*
+ * bufload loads a file into the buffer, replacing its previous contents.
+ * Newlines are represented as separate Line entries (line text excludes '\n').
+ *
+ * Parameters:
+ *  - b: destination buffer.
+ *  - path: file path to read.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on failure.
+ */
 int bufload(Buf *b, const char *path);
+
+/*
+ * bufsave writes the buffer to a file.
+ * Each Line is written followed by a newline.
+ *
+ * Parameters:
+ *  - b: buffer to write.
+ *  - path: file path to write.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on failure.
+ */
 int bufsave(Buf *b, const char *path);
 
+/*
+ * bufgetline returns the address of the i-th line.
+ *
+ * Parameters:
+ *  - b: buffer.
+ *  - i: line index.
+ *
+ * Returns:
+ *  - pointer to Line on success.
+ *  - nil if i is out of range.
+ */
 Line *bufgetline(Buf *b, long i);
 
+/*
+ * bufinsertline inserts a new line at index at.
+ *
+ * Parameters:
+ *  - b: buffer.
+ *  - at: insertion index (clamped to [0, nline]).
+ *  - s: line bytes to copy (may be nil if n == 0).
+ *  - n: number of bytes to copy.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on allocation failure.
+ */
 int bufinsertline(Buf *b, long at, const char *s, long n);
+
+/*
+ * bufdelline deletes the line at index at.
+ *
+ * Parameters:
+ *  - b: buffer.
+ *  - at: index to delete.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 if at is out of range.
+ */
 int bufdelline(Buf *b, long at);
 
+/*
+ * lineinsert inserts bytes into a Line at a byte offset.
+ *
+ * Parameters:
+ *  - l: line to modify.
+ *  - at: byte offset in l->s.
+ *  - s: bytes to insert.
+ *  - n: number of bytes to insert.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on invalid offset or allocation failure.
+ */
 int lineinsert(Line *l, long at, const char *s, long n);
+
+/*
+ * linedelrange deletes a byte range from a Line.
+ *
+ * Parameters:
+ *  - l: line to modify.
+ *  - at: starting byte offset.
+ *  - n: number of bytes to delete.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on invalid offset.
+ */
 int linedelrange(Line *l, long at, long n);

@@ -9,6 +9,18 @@
 static unsigned char pushbuf[8];
 static int pushn;
 
+/*
+ * readbyte reads one byte from fd (or from the internal pushback buffer).
+ *
+ * Parameters:
+ *  - fd: file descriptor to read from.
+ *  - b: output byte.
+ *
+ * Returns:
+ *  - 0 on success (b is set).
+ *  - 1 if interrupted by EINTR (caller may retry).
+ *  - -1 on EOF.
+ */
 static int
 readbyte(int fd, unsigned char *b)
 {
@@ -30,6 +42,15 @@ readbyte(int fd, unsigned char *b)
 	return 0;
 }
 
+/*
+ * unreadbyte pushes a byte back into the internal pushback buffer.
+ *
+ * Parameters:
+ *  - b: byte to push back.
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 unreadbyte(unsigned char b)
 {
@@ -37,6 +58,20 @@ unreadbyte(unsigned char b)
 		pushbuf[pushn++] = b;
 }
 
+/*
+ * readbyte_timeout reads one byte from fd, waiting up to timeoutms.
+ *
+ * Parameters:
+ *  - fd: file descriptor.
+ *  - b: output byte.
+ *  - timeoutms: timeout in milliseconds.
+ *
+ * Returns:
+ *  - 0 on success (b is set).
+ *  - 1 if interrupted by EINTR (treated as non-fatal by callers).
+ *  - 2 on timeout.
+ *  - -1 on EOF.
+ */
 static int
 readbyte_timeout(int fd, unsigned char *b, int timeoutms)
 {
@@ -75,6 +110,17 @@ readbyte_timeout(int fd, unsigned char *b, int timeoutms)
 	return rc;
 }
 
+/*
+ * keyread reads and decodes one key event from the terminal.
+ *
+ * Parameters:
+ *  - t: terminal state (uses t->fdin).
+ *  - k: output key event.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on EOF.
+ */
 int
 keyread(Term *t, Key *k)
 {

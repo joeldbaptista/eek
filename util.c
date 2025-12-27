@@ -4,6 +4,16 @@
 
 #include "util.h"
 
+/*
+ * die prints a formatted error message to stderr and terminates the program.
+ *
+ * Parameters:
+ *  fmt: printf-style format string.
+ *  ...: format arguments.
+ *
+ * Returns:
+ *  Does not return.
+ */
 void
 die(const char *fmt, ...)
 {

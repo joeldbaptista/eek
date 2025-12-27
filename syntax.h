@@ -19,6 +19,15 @@
 static int
 synlangfromfname(const char *fname)
 {
+	/*
+	 * synlangfromfname determines the syntax language from a filename.
+	 *
+	 * Parameters:
+	 *  - fname: filename or path (may be nil).
+	 *
+	 * Returns:
+	 *  - A Syn* language id (e.g. Sync) or Synnone.
+	 */
 	const char *dot;
 
 	if (fname == nil)
@@ -36,6 +45,17 @@ synlangfromfname(const char *fname)
 static int
 synwordkind_lang(int lang, const char *s, long n)
 {
+	/*
+	 * synwordkind_lang classifies an identifier token for a given language.
+	 *
+	 * Parameters:
+	 *  - lang: language id (Syn*).
+	 *  - s: pointer to token bytes.
+	 *  - n: length of token in bytes.
+	 *
+	 * Returns:
+	 *  - Hl* highlight class (Hlnone if not recognized).
+	 */
 	long i;
 
 	if (lang != Sync)

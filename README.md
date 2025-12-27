@@ -61,6 +61,50 @@ Configuration lives in `config.h`.
 - Start from `config.def.h`.
 - Edit `config.h` and rebuild.
 
+## Comments
+
+eek follows the suckless approach: comments should be sparse and useful. The code should be readable without narration; when something *isn't* obvious (or has sharp edges), we write a small, consistent comment instead of a large explanation.
+
+### General rules
+
+- Prefer code clarity first.
+	- If a small refactor can remove the need for a comment, do that instead.
+	- Avoid comments that restate what the code already says.
+
+- Use comments to capture intent and constraints.
+	- Non-obvious invariants (cursor is a byte offset; buffer stores UTF-8 bytes).
+	- Any “why” that would not survive a superficial rewrite.
+	- Protocol/terminal quirks (escape sequences, timeouts, etc.).
+
+- Keep comments short.
+	- If a topic needs paragraphs, it probably belongs in this README (or a doc) instead.
+
+### Function header blocks
+
+Most functions use a small block comment directly above the definition. Keep it compact and predictable:
+
+- One sentence for what it does (and any important side effects).
+- A `Parameters:` list when it’s not trivial.
+- A `Returns:` line describing success/failure.
+
+Example shape:
+
+```c
+/*
+ * thing does X and updates Y.
+ *
+ * Parameters:
+ *  ...
+ *
+ * Returns:
+ *  0 on success, -1 on failure.
+ */
+```
+
+### Struct members
+
+Each struct member gets a short comment if its purpose is not self-evident. Prefer describing units/meaning (e.g. “byte offset”, “line index”, “capacity in bytes”) over repeating the name.
+
 ## Internals
 
 This section describes the main data structures in the editor and how undo works.

@@ -15,6 +15,15 @@ static struct termios oldtio;
 static int haveoldtio;
 static volatile sig_atomic_t needresize;
 
+/*
+ * onwinch handles SIGWINCH (terminal resize) by setting a flag.
+ *
+ * Parameters:
+ *  sig: signal number (unused).
+ *
+ * Returns:
+ *  None.
+ */
 static void
 onwinch(int sig)
 {
@@ -22,12 +31,31 @@ onwinch(int sig)
 	needresize = 1;
 }
 
+/*
+ * onexitrestore is an atexit(3) handler that restores terminal settings.
+ *
+ * Parameters:
+ *  None.
+ *
+ * Returns:
+ *  None.
+ */
 static void
 onexitrestore(void)
 {
 	termrestore();
 }
 
+/*
+ * terminit puts the terminal into raw mode, installs the SIGWINCH handler,
+ * and populates the initial terminal size.
+ *
+ * Parameters:
+ *  t: terminal state to initialize.
+ *
+ * Returns:
+ *  None.
+ */
 void
 terminit(Term *t)
 {
@@ -57,6 +85,15 @@ terminit(Term *t)
 	termgetwinsz(t);
 }
 
+/*
+ * termresized reports whether a SIGWINCH has occurred since the last call.
+ *
+ * Parameters:
+ *  None.
+ *
+ * Returns:
+ *  1 if a resize was observed, 0 otherwise.
+ */
 int
 termresized(void)
 {
@@ -67,6 +104,15 @@ termresized(void)
 	return r;
 }
 
+/*
+ * termrestore restores the original terminal attributes if they were saved.
+ *
+ * Parameters:
+ *  None.
+ *
+ * Returns:
+ *  None.
+ */
 void
 termrestore(void)
 {
@@ -74,6 +120,15 @@ termrestore(void)
 		(void)tcsetattr(0, TCSAFLUSH, &oldtio);
 }
 
+/*
+ * termgetwinsz queries the current terminal dimensions.
+ *
+ * Parameters:
+ *  t: terminal state to update.
+ *
+ * Returns:
+ *  None.
+ */
 void
 termgetwinsz(Term *t)
 {
@@ -85,6 +140,15 @@ termgetwinsz(Term *t)
 	t->col = ws.ws_col;
 }
 
+/*
+ * termclear clears the screen and homes the cursor.
+ *
+ * Parameters:
+ *  t: terminal state (currently unused).
+ *
+ * Returns:
+ *  None.
+ */
 void
 termclear(Term *t)
 {
@@ -93,6 +157,17 @@ termclear(Term *t)
 	write(1, "\x1b[H", 3);
 }
 
+/*
+ * termmoveto moves the cursor to (r, c) (0-based) using ANSI escape codes.
+ *
+ * Parameters:
+ *  t: terminal state (currently unused).
+ *  r: destination row (0-based).
+ *  c: destination column (0-based).
+ *
+ * Returns:
+ *  None.
+ */
 void
 termmoveto(Term *t, int r, int c)
 {
@@ -105,6 +180,15 @@ termmoveto(Term *t, int r, int c)
 		write(1, buf, (size_t)n);
 }
 
+/*
+ * termflush is a placeholder for buffered terminal backends.
+ *
+ * Parameters:
+ *  t: terminal state (currently unused).
+ *
+ * Returns:
+ *  None.
+ */
 void
 termflush(Term *t)
 {

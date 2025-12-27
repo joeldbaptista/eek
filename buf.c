@@ -8,6 +8,15 @@
 
 static int bufgrow(Buf *b, long need);
 
+/*
+ * lineinit initializes a Line to an empty state.
+ *
+ * Parameters:
+ *  - l: line to initialize.
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 lineinit(Line *l)
 {
@@ -16,6 +25,15 @@ lineinit(Line *l)
 	l->cap = 0;
 }
 
+/*
+ * linefree releases memory owned by a Line and reinitializes it.
+ *
+ * Parameters:
+ *  - l: line to free.
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 linefree(Line *l)
 {
@@ -23,6 +41,17 @@ linefree(Line *l)
 	lineinit(l);
 }
 
+/*
+ * linecopy deep-copies src into dst.
+ *
+ * Parameters:
+ *  - dst: destination line (initialized by this function).
+ *  - src: source line.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on allocation failure.
+ */
 static int
 linecopy(Line *dst, Line *src)
 {
@@ -40,6 +69,15 @@ linecopy(Line *dst, Line *src)
 	return 0;
 }
 
+/*
+ * bufinit initializes a buffer to contain a single empty line.
+ *
+ * Parameters:
+ *  - b: buffer to initialize.
+ *
+ * Returns:
+ *  - void.
+ */
 void
 bufinit(Buf *b)
 {
@@ -50,6 +88,15 @@ bufinit(Buf *b)
 	(void)bufinsertline(b, 0, "", 0);
 }
 
+/*
+ * buffree releases all memory owned by the buffer and resets it.
+ *
+ * Parameters:
+ *  - b: buffer to free.
+ *
+ * Returns:
+ *  - void.
+ */
 void
 buffree(Buf *b)
 {
@@ -63,6 +110,17 @@ buffree(Buf *b)
 	b->cap = 0;
 }
 
+/*
+ * bufcopy deep-copies src into dst.
+ *
+ * Parameters:
+ *  - dst: destination buffer (previous contents are freed).
+ *  - src: source buffer.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on invalid arguments or allocation failure.
+ */
 int
 bufcopy(Buf *dst, Buf *src)
 {
@@ -88,6 +146,17 @@ bufcopy(Buf *dst, Buf *src)
 	return 0;
 }
 
+/*
+ * bufgetline returns a pointer to the i-th line in the buffer.
+ *
+ * Parameters:
+ *  - b: buffer.
+ *  - i: line index.
+ *
+ * Returns:
+ *  - pointer to Line on success.
+ *  - nil if out of range.
+ */
 Line *
 bufgetline(Buf *b, long i)
 {
@@ -96,6 +165,17 @@ bufgetline(Buf *b, long i)
 	return &b->line[i];
 }
 
+/*
+ * bufgrow ensures b has capacity for at least need lines.
+ *
+ * Parameters:
+ *  - b: buffer.
+ *  - need: required capacity in lines.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on allocation failure.
+ */
 static int
 bufgrow(Buf *b, long need)
 {
@@ -117,6 +197,19 @@ bufgrow(Buf *b, long need)
 	return 0;
 }
 
+/*
+ * bufinsertline inserts a new line at index at.
+ *
+ * Parameters:
+ *  - b: buffer.
+ *  - at: index to insert at (clamped).
+ *  - s: line contents bytes.
+ *  - n: number of bytes to copy.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on allocation failure.
+ */
 int
 bufinsertline(Buf *b, long at, const char *s, long n)
 {
@@ -148,6 +241,17 @@ bufinsertline(Buf *b, long at, const char *s, long n)
 	return 0;
 }
 
+/*
+ * bufdelline deletes the line at index at.
+ *
+ * Parameters:
+ *  - b: buffer.
+ *  - at: line index.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 if out of range.
+ */
 int
 bufdelline(Buf *b, long at)
 {
@@ -165,6 +269,17 @@ bufdelline(Buf *b, long at)
 	return 0;
 }
 
+/*
+ * linegrow ensures l has capacity for at least need bytes.
+ *
+ * Parameters:
+ *  - l: line.
+ *  - need: required capacity in bytes.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on allocation failure.
+ */
 static int
 linegrow(Line *l, long need)
 {
@@ -186,6 +301,19 @@ linegrow(Line *l, long need)
 	return 0;
 }
 
+/*
+ * lineinsert inserts bytes into a line at byte offset at.
+ *
+ * Parameters:
+ *  - l: line to modify.
+ *  - at: byte offset.
+ *  - s: bytes to insert.
+ *  - n: number of bytes.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on invalid offset or allocation failure.
+ */
 int
 lineinsert(Line *l, long at, const char *s, long n)
 {
@@ -209,6 +337,18 @@ lineinsert(Line *l, long at, const char *s, long n)
 	return 0;
 }
 
+/*
+ * linedelrange deletes n bytes starting at at from a line.
+ *
+ * Parameters:
+ *  - l: line to modify.
+ *  - at: start offset.
+ *  - n: number of bytes.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on invalid offset.
+ */
 int
 linedelrange(Line *l, long at, long n)
 {
@@ -227,6 +367,18 @@ linedelrange(Line *l, long at, long n)
 	return 0;
 }
 
+/*
+ * bufload loads a file into b (replacing existing contents).
+ * Newlines are split into separate lines and not stored in Line.s.
+ *
+ * Parameters:
+ *  - b: destination buffer.
+ *  - path: file path.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on failure.
+ */
 int
 bufload(Buf *b, const char *path)
 {
@@ -263,6 +415,18 @@ bufload(Buf *b, const char *path)
 	return 0;
 }
 
+/*
+ * bufsave writes the buffer to a file.
+ * Each stored line is written followed by a newline.
+ *
+ * Parameters:
+ *  - b: buffer to write.
+ *  - path: file path.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on failure.
+ */
 int
 bufsave(Buf *b, const char *path)
 {

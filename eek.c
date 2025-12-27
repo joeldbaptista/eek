@@ -15,11 +15,11 @@ typedef struct Eek Eek;
 
 typedef struct Undo Undo;
 struct Undo {
-	Buf b;
-	long cx;
-	long cy;
-	long rowoff;
-	long dirty;
+	Buf b;       /* Snapshot of the full text buffer. */
+	long cx;     /* Cursor x (byte offset within line). */
+	long cy;     /* Cursor y (line index). */
+	long rowoff; /* Topmost visible line (scroll offset). */
+	long dirty;  /* Dirty flag at time of snapshot. */
 };
 
 enum {
@@ -42,7 +42,7 @@ enum {
 
 typedef struct SynState SynState;
 struct SynState {
-	int inblock;
+	int inblock; /* Whether the scanner is inside a block comment. */
 };
 
 enum {
@@ -53,47 +53,47 @@ enum {
 };
 
 struct Eek {
-	Term t;
-	Buf b;
-	char *fname;
-	int ownfname;
-	int mode;
-	int synenabled;
-	int syntax;
-	int cursorshape;
-	int linenumbers;
-	int relativenumbers;
-	long lastnormalrune;
-	long lastmotioncount;
-	long seqcount;
-	long count;
-	long opcount;
-	char *ybuf;
-	long ylen;
-	int yline;
-	long cx;
-	long cy;
-	long rowoff;
-	long dirty;
-	long dpending;
-	long cpending;
-	long ypending;
-	long tipending;
-	long tiop;
-	long vax;
-	long vay;
-	long vtipending;
-	char cmd[256];
-	long cmdn;
-	char cmdprefix;
-	char *lastsearch;
-	char msg[256];
-	long quit;
-	Undo *undo;
-	long nundo;
-	long capundo;
-	int undopending;
-	int inundo;
+	Term t;              /* Terminal I/O state and dimensions. */
+	Buf b;               /* Text buffer (array of lines). */
+	char *fname;         /* Current file name (may be nil). */
+	int ownfname;        /* Whether fname is heap-owned and must be freed. */
+	int mode;            /* Current editor mode (Modenormal/Modeinsert/...). */
+	int synenabled;      /* User toggle for syntax highlighting. */
+	int syntax;          /* Active syntax language (Syn*). */
+	int cursorshape;     /* Current cursor shape (DECSCUSR value). */
+	int linenumbers;     /* Show absolute line numbers. */
+	int relativenumbers; /* Show relative line numbers. */
+	long lastnormalrune; /* Previous rune in NORMAL for multi-key sequences (e.g. 'g'). */
+	long lastmotioncount;/* Previous motion count (used by some sequences). */
+	long seqcount;       /* Count captured for sequences like 'gg'. */
+	long count;          /* Current numeric prefix being parsed. */
+	long opcount;        /* Operator count multiplier (e.g. 3dw => opcount=3). */
+	char *ybuf;          /* Yank/delete register contents (raw bytes). */
+	long ylen;           /* Length of ybuf in bytes. */
+	int yline;           /* Non-zero if ybuf is linewise. */
+	long cx;             /* Cursor x: byte offset in current line. */
+	long cy;             /* Cursor y: current line index. */
+	long rowoff;         /* Vertical scroll offset (topmost visible line). */
+	long dirty;          /* Non-zero if buffer has unsaved modifications. */
+	long dpending;       /* Pending delete operator ('d' has been typed). */
+	long cpending;       /* Pending change operator ('c' has been typed). */
+	long ypending;       /* Pending yank operator ('y' has been typed). */
+	long tipending;      /* Pending text-object modifier (e.g. 'di' waiting for delimiter). */
+	long tiop;           /* Text-object operator that is pending ('d' or 'c'). */
+	long vax;            /* VISUAL anchor x (byte offset). */
+	long vay;            /* VISUAL anchor y (line index). */
+	long vtipending;     /* VISUAL pending text-object modifier. */
+	char cmd[256];       /* Command-line buffer (for ':' and '/' prompts). */
+	long cmdn;           /* Number of bytes used in cmd. */
+	char cmdprefix;      /* Prompt prefix character (':' or '/'). */
+	char *lastsearch;    /* Last search pattern (heap-owned) or nil. */
+	char msg[256];       /* Status message shown in the status line. */
+	long quit;           /* Non-zero requests program exit. */
+	Undo *undo;          /* Undo snapshot stack (dynamic array). */
+	long nundo;          /* Number of undo entries currently stored. */
+	long capundo;        /* Allocated capacity of undo[] in entries. */
+	int undopending;     /* Groups multiple edits into a single undo step (e.g. INSERT session). */
+	int inundo;          /* Non-zero while restoring undo (prevents recursive snapshotting). */
 };
 
 static long linelen(Eek *e, long y);
@@ -120,6 +120,16 @@ static int undopush(Eek *e);
 static void undofree(Eek *e);
 static void undopop(Eek *e);
 
+/*
+ * poslt compares two (y, x) positions.
+ *
+ * Parameters:
+ *  - ay, ax: first position.
+ *  - by, bx: second position.
+ *
+ * Returns:
+ *  - 1 if (ay,ax) < (by,bx), else 0.
+ */
 static int
 poslt(long ay, long ax, long by, long bx)
 {
@@ -130,6 +140,18 @@ poslt(long ay, long ax, long by, long bx)
 	return ax < bx;
 }
 
+/*
+ * vselbounds computes the inclusive start and exclusive end bounds of the
+ * current VISUAL selection in buffer coordinates.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - sy, sx: output start position (inclusive).
+ *  - ey, ex: output end position (exclusive, UTF-8 advanced by one codepoint).
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 vselbounds(Eek *e, long *sy, long *sx, long *ey, long *ex)
 {
@@ -155,6 +177,17 @@ vselbounds(Eek *e, long *sy, long *sx, long *ey, long *ex)
 	*ex = nextutf8(e, by, bx);
 }
 
+/*
+ * invsel reports whether the byte position (y, x) lies inside the current
+ * VISUAL selection.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - y, x: position to test.
+ *
+ * Returns:
+ *  - non-zero if selected, 0 otherwise.
+ */
 static int
 invsel(Eek *e, long y, long x)
 {
@@ -174,6 +207,18 @@ invsel(Eek *e, long y, long x)
 	return 1;
 }
 
+/*
+ * vselectinside updates the VISUAL selection to the inside of a delimiter pair
+ * surrounding the cursor (e.g. i(, i{, i[).
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - c: delimiter character identifying the pair.
+ *
+ * Returns:
+ *  - 0 on success (including empty selection).
+ *  - -1 if no matching pair is found.
+ */
 static int
 vselectinside(Eek *e, long c)
 {
@@ -204,6 +249,16 @@ vselectinside(Eek *e, long c)
 	return 0;
 }
 
+/*
+ * delimpair maps a delimiter character to its opening and closing pair.
+ *
+ * Parameters:
+ *  - c: delimiter character.
+ *  - open, close: output pair characters.
+ *
+ * Returns:
+ *  - 1 if c is a supported delimiter, 0 otherwise.
+ */
 static int
 delimpair(long c, char *open, char *close)
 {
@@ -233,6 +288,19 @@ delimpair(long c, char *open, char *close)
 	}
 }
 
+/*
+ * findopen searches backward for the matching opening delimiter, respecting
+ * nesting.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - open, close: delimiter pair.
+ *  - oy, ox: output position of the opening delimiter.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 if not found.
+ */
 static int
 findopen(Eek *e, char open, char close, long *oy, long *ox)
 {
@@ -272,6 +340,20 @@ findopen(Eek *e, char open, char close, long *oy, long *ox)
 	return -1;
 }
 
+/*
+ * findclosefrom searches forward for the matching closing delimiter starting
+ * just after (sy, sx), respecting nesting.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - sy, sx: starting position of an opening delimiter.
+ *  - open, close: delimiter pair.
+ *  - cy, cx: output position of the closing delimiter.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 if not found.
+ */
 static int
 findclosefrom(Eek *e, long sy, long sx, char open, char close, long *cy, long *cx)
 {
@@ -306,6 +388,20 @@ findclosefrom(Eek *e, long sy, long sx, char open, char close, long *cy, long *c
 	return -1;
 }
 
+/*
+ * delrange deletes text from (y0, x0) to (y1, x1). If yank is non-zero, it
+ * yanks the deleted text into the yank register before deletion.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - y0, x0: one endpoint.
+ *  - y1, x1: other endpoint.
+ *  - yank: whether to yank the range prior to deleting.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on failure.
+ */
 static int
 delrange(Eek *e, long y0, long x0, long y1, long x1, int yank)
 {
@@ -391,6 +487,19 @@ delrange(Eek *e, long y0, long x0, long y1, long x1, int yank)
 	return 0;
 }
 
+/*
+ * delinside deletes inside a delimiter pair around the cursor, optionally
+ * entering INSERT mode for change operations.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - op: operator rune (e.g. 'd' or 'c').
+ *  - c: delimiter character identifying the pair.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 if no matching pair is found.
+ */
 static int
 delinside(Eek *e, long op, long c)
 {
@@ -414,12 +523,32 @@ delinside(Eek *e, long op, long c)
 	return 0;
 }
 
+/*
+ * countval converts a parsed numeric prefix to a repeat count.
+ *
+ * Parameters:
+ *  - n: parsed count (may be 0 meaning "no count").
+ *
+ * Returns:
+ *  - n if n > 0, otherwise 1.
+ */
 static long
 countval(long n)
 {
 	return n > 0 ? n : 1;
 }
 
+/*
+ * repeat calls a motion/editor function n times.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - fn: function to invoke.
+ *  - n: repetition count.
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 repeat(Eek *e, void (*fn)(Eek *), long n)
 {
@@ -429,6 +558,15 @@ repeat(Eek *e, void (*fn)(Eek *), long n)
 		fn(e);
 }
 
+/*
+ * yclear clears the yank register.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 yclear(Eek *e)
 {
@@ -437,6 +575,20 @@ yclear(Eek *e)
 	e->ylen = 0;
 	e->yline = 0;
 }
+
+/*
+ * yset replaces the yank register with the given bytes.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - s: bytes to copy.
+ *  - n: number of bytes.
+ *  - linewise: whether the register is linewise.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on allocation failure.
+ */
 static int
 yset(Eek *e, const char *s, long n, int linewise)
 {
@@ -458,6 +610,18 @@ yset(Eek *e, const char *s, long n, int linewise)
 	return 0;
 }
 
+/*
+ * yappend appends bytes to the yank register.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - s: bytes to append.
+ *  - n: number of bytes to append.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on allocation failure.
+ */
 static int
 yappend(Eek *e, const char *s, long n)
 {
@@ -476,6 +640,20 @@ yappend(Eek *e, const char *s, long n)
 	return 0;
 }
 
+/*
+ * yankrange yanks a range of text into the yank register.
+ * The range is interpreted in byte coordinates; multi-line yanks include '\n'
+ * separators between lines.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - y0, x0: one endpoint.
+ *  - y1, x1: other endpoint.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on allocation failure.
+ */
 static int
 yankrange(Eek *e, long y0, long x0, long y1, long x1)
 {
@@ -529,6 +707,18 @@ yankrange(Eek *e, long y0, long x0, long y1, long x1)
 	return 0;
 }
 
+/*
+ * yanklines yanks n whole lines starting at at into the yank register.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - at: starting line index.
+ *  - n: number of lines.
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on allocation failure.
+ */
 static int
 yanklines(Eek *e, long at, long n)
 {
@@ -553,6 +743,17 @@ yanklines(Eek *e, long at, long n)
 	return 0;
 }
 
+/*
+ * pastecharwise pastes the yank register as characters at the cursor.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - before: non-zero to paste before cursor (P), 0 to paste after (p).
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on failure.
+ */
 static int
 pastecharwise(Eek *e, int before)
 {
@@ -589,6 +790,17 @@ pastecharwise(Eek *e, int before)
 	return 0;
 }
 
+/*
+ * pastelinewise pastes the yank register as whole lines.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - before: non-zero to paste above current line (P), 0 to paste below (p).
+ *
+ * Returns:
+ *  - 0 on success.
+ *  - -1 on allocation failure.
+ */
 static int
 pastelinewise(Eek *e, int before)
 {
@@ -624,6 +836,15 @@ pastelinewise(Eek *e, int before)
 	return 0;
 }
 
+/*
+ * ndigits returns the number of decimal digits needed to print n.
+ *
+ * Parameters:
+ *  - n: integer.
+ *
+ * Returns:
+ *  - number of digits (>= 1).
+ */
 static int
 ndigits(long n)
 {
@@ -639,6 +860,15 @@ ndigits(long n)
 	return d;
 }
 
+/*
+ * gutterwidth computes the width in columns of the line-number gutter.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *
+ * Returns:
+ *  - gutter width in terminal columns (0 if disabled or too narrow).
+ */
 static int
 gutterwidth(Eek *e)
 {
@@ -652,6 +882,16 @@ gutterwidth(Eek *e)
 	return w;
 }
 
+/*
+ * setcursorshape updates the terminal cursor shape using DECSCUSR.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - shape: DECSCUSR shape code.
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 setcursorshape(Eek *e, int shape)
 {
@@ -668,6 +908,16 @@ setcursorshape(Eek *e, int shape)
 	e->cursorshape = shape;
 }
 
+/*
+ * setmode switches the editor's mode and updates cursor shape.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - mode: one of the Mode* enum values.
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 setmode(Eek *e, int mode)
 {
@@ -690,6 +940,15 @@ setmode(Eek *e, int mode)
 	}
 }
 
+/*
+ * normalfixcursor clamps the cursor to a valid location in the current line.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 normalfixcursor(Eek *e)
 {
@@ -704,6 +963,17 @@ normalfixcursor(Eek *e)
 		e->cx = prevutf8(e, e->cy, len);
 }
 
+/*
+ * clamp clamps v into [lo, hi].
+ *
+ * Parameters:
+ *  - v: value to clamp.
+ *  - lo: lower bound.
+ *  - hi: upper bound.
+ *
+ * Returns:
+ *  - clamped value.
+ */
 static long
 clamp(long v, long lo, long hi)
 {
@@ -714,6 +984,16 @@ clamp(long v, long lo, long hi)
 	return v;
 }
 
+/*
+ * linelen returns the length in bytes of line y.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - y: line index.
+ *
+ * Returns:
+ *  - length in bytes, or 0 if y is out of range.
+ */
 static long
 linelen(Eek *e, long y)
 {
@@ -725,6 +1005,17 @@ linelen(Eek *e, long y)
 	return l->n;
 }
 
+/*
+ * prevutf8 returns the previous UTF-8 codepoint boundary at or before at.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - y: line index.
+ *  - at: byte offset.
+ *
+ * Returns:
+ *  - byte offset of the previous codepoint boundary.
+ */
 static long
 prevutf8(Eek *e, long y, long at)
 {
@@ -747,6 +1038,17 @@ prevutf8(Eek *e, long y, long at)
 	return i;
 }
 
+/*
+ * nextutf8 returns the next UTF-8 codepoint boundary after at.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - y: line index.
+ *  - at: byte offset.
+ *
+ * Returns:
+ *  - byte offset of the next codepoint boundary.
+ */
 static long
 nextutf8(Eek *e, long y, long at)
 {
@@ -777,6 +1079,15 @@ nextutf8(Eek *e, long y, long at)
 	return at + n;
 }
 
+/*
+ * isword reports whether c is considered a "word" character for word motions.
+ *
+ * Parameters:
+ *  - c: byte/rune value.
+ *
+ * Returns:
+ *  - non-zero if word character, 0 otherwise.
+ */
 static int
 isword(long c)
 {
@@ -791,12 +1102,31 @@ isword(long c)
 	return 1;
 }
 
+/*
+ * isws reports whether c is considered whitespace.
+ *
+ * Parameters:
+ *  - c: byte/rune value.
+ *
+ * Returns:
+ *  - non-zero if whitespace, 0 otherwise.
+ */
 static int
 isws(long c)
 {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
 
+/*
+ * ispunctword reports whether c is considered punctuation for "punctuation word"
+ * motions.
+ *
+ * Parameters:
+ *  - c: byte/rune value.
+ *
+ * Returns:
+ *  - non-zero if punctuation, 0 otherwise.
+ */
 static int
 ispunctword(long c)
 {
@@ -809,6 +1139,18 @@ ispunctword(long c)
 	return !isword(c);
 }
 
+/*
+ * peekbyte returns the byte value at (y, at) or -1 if out of range.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - y: line index.
+ *  - at: byte offset.
+ *
+ * Returns:
+ *  - byte value (0..255) on success.
+ *  - -1 if y/at is out of range.
+ */
 static long
 peekbyte(Eek *e, long y, long at)
 {
@@ -822,18 +1164,45 @@ peekbyte(Eek *e, long y, long at)
 	return (unsigned char)l->s[at];
 }
 
+/*
+ * movel moves cursor left by one UTF-8 codepoint.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 movel(Eek *e)
 {
 	e->cx = prevutf8(e, e->cy, e->cx);
 }
 
+/*
+ * mover moves cursor right by one UTF-8 codepoint.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 mover(Eek *e)
 {
 	e->cx = nextutf8(e, e->cy, e->cx);
 }
 
+/*
+ * moveu moves cursor up one line, clamping to file bounds.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 moveu(Eek *e)
 {
@@ -841,6 +1210,15 @@ moveu(Eek *e)
 	e->cx = clamp(e->cx, 0, linelen(e, e->cy));
 }
 
+/*
+ * moved moves cursor down one line, clamping to file bounds.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 moved(Eek *e)
 {
@@ -848,6 +1226,15 @@ moved(Eek *e)
 	e->cx = clamp(e->cx, 0, linelen(e, e->cy));
 }
 
+/*
+ * movew implements the vi-like 'w' motion using simple word classes.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 movew(Eek *e)
 {
@@ -908,6 +1295,15 @@ movew(Eek *e)
 	}
 }
 
+/*
+ * moveb implements the vi-like 'b' motion (backward word).
+ *
+ * Parameters:
+ *  - e: editor state.
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 moveb(Eek *e)
 {
@@ -969,6 +1365,17 @@ moveb(Eek *e)
 	}
 }
 
+/*
+ * rxfromcx converts a byte offset (cx) to a render column (rx), expanding tabs.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - y: line index.
+ *  - cx: byte offset within the line.
+ *
+ * Returns:
+ *  - render x position in terminal columns.
+ */
 static long
 rxfromcx(Eek *e, long y, long cx)
 {
@@ -993,6 +1400,15 @@ rxfromcx(Eek *e, long y, long cx)
 	return tx;
 }
 
+/*
+ * scroll adjusts e->rowoff so the cursor line is visible.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 scroll(Eek *e)
 {
@@ -1008,6 +1424,15 @@ scroll(Eek *e)
 		e->rowoff = e->cy - textrows + 1;
 }
 
+/*
+ * drawstatus draws the status line (mode, messages, filename, cursor).
+ *
+ * Parameters:
+ *  - e: editor state.
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 drawstatus(Eek *e)
 {
@@ -1037,6 +1462,17 @@ drawstatus(Eek *e)
 	write(e->t.fdout, "\x1b[m", 3);
 }
 
+/*
+ * setmsg formats a status message into e->msg.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - fmt: printf-style format.
+ *  - ...: format arguments.
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 setmsg(Eek *e, const char *fmt, ...)
 {
@@ -1047,6 +1483,16 @@ setmsg(Eek *e, const char *fmt, ...)
 	va_end(ap);
 }
 
+/*
+ * utf8enc encodes a Unicode codepoint into UTF-8 bytes.
+ *
+ * Parameters:
+ *  - r: Unicode codepoint.
+ *  - s: output buffer of at least 4 bytes.
+ *
+ * Returns:
+ *  - number of bytes written (1..4).
+ */
 static long
 utf8enc(long r, char *s)
 {
@@ -1080,6 +1526,15 @@ utf8enc(long r, char *s)
 	return 3;
 }
 
+/*
+ * setsyn sets the active syntax language based on e->fname and synenabled.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 setsyn(Eek *e)
 {
@@ -1089,12 +1544,32 @@ setsyn(Eek *e)
 	e->syntax = synlangfromfname(e->fname);
 }
 
+/*
+ * syninit initializes the syntax scanner state.
+ *
+ * Parameters:
+ *  - s: scanner state.
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 syninit(SynState *s)
 {
 	s->inblock = 0;
 }
 
+/*
+ * synscanline advances the syntax scanner state across a line.
+ * This is used to know whether later lines start inside a block comment.
+ *
+ * Parameters:
+ *  - l: line to scan.
+ *  - s: scanner state (updated).
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 synscanline(Line *l, SynState *s)
 {
@@ -1148,6 +1623,18 @@ synscanline(Line *l, SynState *s)
 	}
 }
 
+/*
+ * synscanuntil advances the syntax scanner from the start of the file up to
+ * (but not including) line index upto.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *  - upto: line index limit.
+ *  - s: scanner state (updated).
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 synscanuntil(Eek *e, long upto, SynState *s)
 {
@@ -1166,6 +1653,15 @@ synscanuntil(Eek *e, long upto, SynState *s)
 	}
 }
 
+/*
+ * synesc maps a highlight class (Hl*) to an ANSI SGR escape string.
+ *
+ * Parameters:
+ *  - hl: highlight class.
+ *
+ * Returns:
+ *  - pointer to a NUL-terminated ANSI escape string.
+ */
 static const char *
 synesc(int hl)
 {
@@ -1181,6 +1677,18 @@ synesc(int hl)
 	}
 }
 
+/*
+ * drawattrs writes terminal attributes for a cell: reset, optional inverse,
+ * and optional syntax highlight color.
+ *
+ * Parameters:
+ *  - e: editor state (uses output fd).
+ *  - inv: non-zero to apply inverse video.
+ *  - hl: highlight class.
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 drawattrs(Eek *e, int inv, int hl)
 {
@@ -1191,6 +1699,15 @@ drawattrs(Eek *e, int inv, int hl)
 		write(e->t.fdout, synesc(hl), strlen(synesc(hl)));
 }
 
+/*
+ * cmdclear resets the command/search input buffer.
+ *
+ * Parameters:
+ *  - e: editor state.
+ *
+ * Returns:
+ *  - void.
+ */
 static void
 cmdclear(Eek *e)
 {
@@ -1198,6 +1715,18 @@ cmdclear(Eek *e)
 	memset(e->cmd, 0, sizeof e->cmd);
 }
 
+/*
+ * searchforward searches for pat starting just after the cursor and moves the
+ * cursor to the next match. This performs a simple byte substring search.
+ *
+ * Parameters:
+ *  - e: editor state (cursor updated on success).
+ *  - pat: NUL-terminated search pattern.
+ *
+ * Returns:
+ *  - 0 if a match was found (cursor updated).
+ *  - -1 if no match was found or on invalid input.
+ */
 static int
 searchforward(Eek *e, const char *pat)
 {
@@ -1262,6 +1791,19 @@ searchforward(Eek *e, const char *pat)
 
 	return -1;
 }
+
+/*
+ * searchbackward searches for pat before the cursor and moves the cursor to
+ * the previous match. This performs a simple byte substring search.
+ *
+ * Parameters:
+ *  - e: editor state (cursor updated on success).
+ *  - pat: NUL-terminated search pattern.
+ *
+ * Returns:
+ *  - 0 if a match was found (cursor updated).
+ *  - -1 if no match was found or on invalid input.
+ */
 
 static int
 searchbackward(Eek *e, const char *pat)
@@ -1338,6 +1880,18 @@ searchbackward(Eek *e, const char *pat)
 	return -1;
 }
 
+/*
+ * searchexec executes the current "/" search command in e->cmd.
+ *
+ * If the current pattern is empty, it repeats the previous search stored in
+ * e->lastsearch.
+ *
+ * Parameters:
+ *  e: editor state.
+ *
+ * Returns:
+ *  0 on success (cursor moved to match), -1 on failure.
+ */
 static int
 searchexec(Eek *e)
 {
@@ -1374,6 +1928,20 @@ searchexec(Eek *e)
 	return 0;
 }
 
+/*
+ * readfileinsert reads a file and inserts its contents as lines into the
+ * buffer.
+ *
+ * Each input line has trailing newlines stripped before insertion.
+ *
+ * Parameters:
+ *  e: editor state.
+ *  path: path to the file to read.
+ *  at: 0-based line index at which to insert.
+ *
+ * Returns:
+ *  Number of lines inserted on success, -1 on failure.
+ */
 static long
 readfileinsert(Eek *e, const char *path, long at)
 {
@@ -1411,6 +1979,17 @@ readfileinsert(Eek *e, const char *path, long at)
 	return nins;
 }
 
+/*
+ * setopt applies a single :set option token.
+ *
+ * Parameters:
+ *  e: editor state.
+ *  opt: option token (e.g. "syntax", "nosyntax", "numbers", "nonumbers",
+ *       "relativenumbers", "norelativenumbers").
+ *
+ * Returns:
+ *  0 on success, -1 if the option is unknown.
+ */
 static int
 setopt(Eek *e, const char *opt)
 {
@@ -1449,6 +2028,17 @@ setopt(Eek *e, const char *opt)
 	return -1;
 }
 
+/*
+ * cmdexec executes the current ":" command line in e->cmd.
+ *
+ * Supported commands include: set, q, w, wq, r/read.
+ *
+ * Parameters:
+ *  e: editor state.
+ *
+ * Returns:
+ *  0 on success, -1 on failure.
+ */
 static int
 cmdexec(Eek *e)
 {
@@ -1584,6 +2174,15 @@ cmdexec(Eek *e)
 	return -1;
 }
 
+/*
+ * draw redraws the entire editor UI (buffer contents + status line).
+ *
+ * Parameters:
+ *  e: editor state.
+ *
+ * Returns:
+ *  None.
+ */
 static void
 draw(Eek *e)
 {
@@ -1859,6 +2458,19 @@ draw(Eek *e)
 	write(e->t.fdout, "\x1b[?25h", 6);
 }
 
+/*
+ * insertbytes inserts raw bytes at the current cursor position.
+ *
+ * This pushes an undo snapshot (unless one is already pending).
+ *
+ * Parameters:
+ *  e: editor state.
+ *  s: bytes to insert.
+ *  n: number of bytes to insert.
+ *
+ * Returns:
+ *  0 on success, -1 on failure.
+ */
 static int
 insertbytes(Eek *e, const char *s, long n)
 {
@@ -1877,6 +2489,15 @@ insertbytes(Eek *e, const char *s, long n)
 	return 0;
 }
 
+/*
+ * insertnl inserts a newline at the cursor by splitting the current line.
+ *
+ * Parameters:
+ *  e: editor state.
+ *
+ * Returns:
+ *  0 on success, -1 on failure.
+ */
 static int
 insertnl(Eek *e)
 {
@@ -1903,6 +2524,15 @@ insertnl(Eek *e)
 	return 0;
 }
 
+/*
+ * delat deletes the UTF-8 codepoint starting at the cursor.
+ *
+ * Parameters:
+ *  e: editor state.
+ *
+ * Returns:
+ *  0 on success, -1 on failure.
+ */
 static int
 delat(Eek *e)
 {
@@ -1929,6 +2559,16 @@ delat(Eek *e)
 	return 0;
 }
 
+/*
+ * delats deletes n codepoints starting at the cursor.
+ *
+ * Parameters:
+ *  e: editor state.
+ *  n: number of codepoints to delete.
+ *
+ * Returns:
+ *  0 on success, -1 on failure.
+ */
 static int
 delats(Eek *e, long n)
 {
@@ -1941,6 +2581,16 @@ delats(Eek *e, long n)
 	return 0;
 }
 
+/*
+ * delat_yank deletes n codepoints starting at the cursor and yanks them.
+ *
+ * Parameters:
+ *  e: editor state.
+ *  n: number of codepoints to delete/yank (defaults to 1 if <= 0).
+ *
+ * Returns:
+ *  0 on success, -1 on failure.
+ */
 static int
 delat_yank(Eek *e, long n)
 {
@@ -1978,6 +2628,17 @@ delat_yank(Eek *e, long n)
 	return 0;
 }
 
+/*
+ * delback implements backspace in insert mode.
+ *
+ * If at column 0, it joins the current line into the previous line.
+ *
+ * Parameters:
+ *  e: editor state.
+ *
+ * Returns:
+ *  0 on success, -1 on failure.
+ */
 static int
 delback(Eek *e)
 {
@@ -2020,6 +2681,15 @@ delback(Eek *e)
 	return 0;
 }
 
+/*
+ * delline deletes the current line.
+ *
+ * Parameters:
+ *  e: editor state.
+ *
+ * Returns:
+ *  0 on success, -1 on failure.
+ */
 static int
 delline(Eek *e)
 {
@@ -2034,6 +2704,16 @@ delline(Eek *e)
 	return 0;
 }
 
+/*
+ * dellines deletes n lines starting at the current line.
+ *
+ * Parameters:
+ *  e: editor state.
+ *  n: number of lines to delete.
+ *
+ * Returns:
+ *  0 on success, -1 on failure.
+ */
 static int
 dellines(Eek *e, long n)
 {
@@ -2046,6 +2726,17 @@ dellines(Eek *e, long n)
 	return 0;
 }
 
+/*
+ * wordtarget computes the target position for a "w"-style motion.
+ *
+ * Parameters:
+ *  e: editor state.
+ *  ty: output target line.
+ *  tx: output target column.
+ *
+ * Returns:
+ *  None.
+ */
 static void
 wordtarget(Eek *e, long *ty, long *tx)
 {
@@ -2126,6 +2817,15 @@ wordtarget(Eek *e, long *ty, long *tx)
 	*tx = x;
 }
 
+/*
+ * delword deletes from the cursor to the "w" motion target.
+ *
+ * Parameters:
+ *  e: editor state.
+ *
+ * Returns:
+ *  0 on success, -1 on failure.
+ */
 static int
 delword(Eek *e)
 {
@@ -2172,6 +2872,16 @@ delword(Eek *e)
 	return 0;
 }
 
+/*
+ * delwords repeats delword n times.
+ *
+ * Parameters:
+ *  e: editor state.
+ *  n: repeat count.
+ *
+ * Returns:
+ *  0 on success, -1 on failure.
+ */
 static int
 delwords(Eek *e, long n)
 {
@@ -2184,6 +2894,17 @@ delwords(Eek *e, long n)
 	return 0;
 }
 
+/*
+ * endwordtarget computes the target position for an "e"-style motion.
+ *
+ * Parameters:
+ *  e: editor state.
+ *  ty: output target line.
+ *  tx: output target column.
+ *
+ * Returns:
+ *  None.
+ */
 static void
 endwordtarget(Eek *e, long *ty, long *tx)
 {
@@ -2238,6 +2959,15 @@ endwordtarget(Eek *e, long *ty, long *tx)
 	*tx = x;
 }
 
+/*
+ * delendword deletes from the cursor to the end of the current word.
+ *
+ * Parameters:
+ *  e: editor state.
+ *
+ * Returns:
+ *  0 on success, -1 on failure.
+ */
 static int
 delendword(Eek *e)
 {
@@ -2264,6 +2994,16 @@ delendword(Eek *e)
 	return 0;
 }
 
+/*
+ * delendwords repeats delendword n times.
+ *
+ * Parameters:
+ *  e: editor state.
+ *  n: repeat count.
+ *
+ * Returns:
+ *  0 on success, -1 on failure.
+ */
 static int
 delendwords(Eek *e, long n)
 {
@@ -2276,6 +3016,16 @@ delendwords(Eek *e, long n)
 	return 0;
 }
 
+/*
+ * openlinebelow inserts a new empty line below the current line and enters
+ * insert mode.
+ *
+ * Parameters:
+ *  e: editor state.
+ *
+ * Returns:
+ *  0 on success, -1 on failure.
+ */
 static int
 openlinebelow(Eek *e)
 {
@@ -2290,6 +3040,16 @@ openlinebelow(Eek *e)
 	return 0;
 }
 
+/*
+ * openlineabove inserts a new empty line above the current line and enters
+ * insert mode.
+ *
+ * Parameters:
+ *  e: editor state.
+ *
+ * Returns:
+ *  0 on success, -1 on failure.
+ */
 static int
 openlineabove(Eek *e)
 {
@@ -2303,6 +3063,16 @@ openlineabove(Eek *e)
 	return 0;
 }
 
+/*
+ * main starts the editor.
+ *
+ * Parameters:
+ *  argc: argument count.
+ *  argv: argument vector; argv[1] (if present) is the file to open.
+ *
+ * Returns:
+ *  Process exit status.
+ */
 int
 main(int argc, char **argv)
 {
@@ -2910,6 +3680,18 @@ done:
 	return 0;
 }
 
+/*
+ * undopush records an undo snapshot of the current buffer and view state.
+ *
+ * This is a snapshot-based undo; it deep-copies the buffer. To group insert-mode
+ * edits into a single undo step, callers rely on e->undopending.
+ *
+ * Parameters:
+ *  e: editor state.
+ *
+ * Returns:
+ *  0 on success, -1 on allocation failure.
+ */
 static int
 undopush(Eek *e)
 {
@@ -2956,6 +3738,15 @@ undopush(Eek *e)
 	return 0;
 }
 
+/*
+ * undopop restores the most recent undo snapshot.
+ *
+ * Parameters:
+ *  e: editor state.
+ *
+ * Returns:
+ *  None.
+ */
 static void
 undopop(Eek *e)
 {
@@ -2981,6 +3772,15 @@ undopop(Eek *e)
 	e->inundo = 0;
 }
 
+/*
+ * undofree releases all undo snapshots.
+ *
+ * Parameters:
+ *  e: editor state.
+ *
+ * Returns:
+ *  None.
+ */
 static void
 undofree(Eek *e)
 {
