@@ -531,7 +531,6 @@ subexec(Eek *e, char *line)
 	int havea1;
 	regex_t re;
 	int reok;
-	char delim;
 	char *old;
 	char *new;
 	int global;
@@ -588,24 +587,21 @@ subexec(Eek *e, char *line)
 	if (*p != 's')
 		return 0;
 	p++;
-
-	if (*p == 0)
-		return 1;
-	delim = *p++;
-	if (delim == 0)
-		return 1;
+	if (*p != '/')
+		return 0;
+	p++;
 
 	old = p;
-	while (*p && *p != delim)
+	while (*p && *p != '/')
 		p++;
-	if (*p != delim)
+	if (*p != '/')
 		return 1;
 	*p++ = 0;
 
 	new = p;
-	while (*p && *p != delim)
+	while (*p && *p != '/')
 		p++;
-	if (*p != delim)
+	if (*p != '/')
 		return 1;
 	*p++ = 0;
 
