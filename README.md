@@ -184,7 +184,7 @@ There is currently no redo stack. Only single-step undo via `u` is implemented.
 
 ## Future developments
 
-eek is intentionally minimal, but there are several improvements that fit the “small vi-clone” goal and can be implemented without turning the project into a full Vim replacement.
+eek is intentionally minimal, but there are several improvements that fit the “small vi-clone” goal and can be implemented without turning the project into a full Vim replacement. This section is a roadmap, not a compatibility promise.
 
 ### Editing features
 
@@ -204,6 +204,10 @@ eek is intentionally minimal, but there are several improvements that fit the �
 	- `r{char}`: replace the character under the cursor (count-aware).
 	- `s`: delete one character and enter INSERT (similar to `cl`).
 
+- Indentation
+	- `>>` / `<<` (and counts) for simple line indentation shifting.
+	- Keep it compile-time configurable (tabs vs spaces) to stay suckless-style.
+
 ### Motions and text objects
 
 - Character find motions: `f{c}`, `F{c}`, `t{c}`, `T{c}` plus repeats `;` and `,`.
@@ -213,8 +217,12 @@ eek is intentionally minimal, but there are several improvements that fit the �
 
 ### Search
 
-- Forward search (`/pattern`) with `n`/`N` to jump between matches.
-- Optional match highlighting (keeping it simple and fast).
+- Search is currently plain forward search (`/pattern`) plus repeats (`n`/`N`).
+- Potential improvements that still keep things small:
+	- Backward search prompt (`?pattern`).
+	- Optional match highlighting for the current match only (not a full multi-match UI).
+	- Configurable wrap behavior (wrapscan on/off).
+	- Whole-word search as a simple toggle.
 
 ### Internal improvements
 

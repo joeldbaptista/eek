@@ -85,6 +85,8 @@ struct Eek {
 	long vtipending;
 	char cmd[256];
 	long cmdn;
+	char cmdprefix;
+	char *lastsearch;
 	char msg[256];
 	long quit;
 	Undo *undo;
@@ -1014,7 +1016,10 @@ drawstatus(Eek *e)
 	const char *m;
 
 	if (e->mode == Modecmd) {
-		n = snprintf(buf, sizeof buf, ":%.*s", (int)e->cmdn, e->cmd);
+		char pfx;
+
+		pfx = e->cmdprefix ? e->cmdprefix : ':';
+		n = snprintf(buf, sizeof buf, "%c%.*s", pfx, (int)e->cmdn, e->cmd);
 	} else {
 		m = e->mode == Modeinsert ? "INSERT" : (e->mode == Modevisual ? "VISUAL" : "NORMAL");
 		if (e->msg[0] != 0)
@@ -1194,6 +1199,219 @@ cmdclear(Eek *e)
 }
 
 static int
+searchforward(Eek *e, const char *pat)
+{
+	long y;
+	long x;
+	long startx;
+	long patn;
+	Line *l;
+
+	if (e == nil || pat == nil)
+		return -1;
+	patn = (long)strlen(pat);
+	if (patn <= 0)
+		return -1;
+
+	y = e->cy;
+	startx = nextutf8(e, e->cy, e->cx);
+	for (; y < e->b.nline; y++) {
+		l = bufgetline(&e->b, y);
+		if (l == nil)
+			continue;
+		x = (y == e->cy) ? startx : 0;
+		if (x < 0)
+			x = 0;
+		if (x > l->n)
+			x = l->n;
+		for (; x + patn <= l->n; x++) {
+			if (memcmp(l->s + x, pat, (size_t)patn) == 0) {
+				e->cy = y;
+				e->cx = x;
+				return 0;
+			}
+		}
+	}
+
+	/* wrapscan: continue at top */
+	for (y = 0; y <= e->cy && y < e->b.nline; y++) {
+		long lim;
+
+		l = bufgetline(&e->b, y);
+		if (l == nil)
+			continue;
+		x = 0;
+		lim = l->n;
+		if (y == e->cy) {
+			lim = e->cx;
+			if (lim < 0)
+				lim = 0;
+			if (lim > l->n)
+				lim = l->n;
+		}
+		if (lim < patn)
+			continue;
+		for (; x + patn <= lim; x++) {
+			if (memcmp(l->s + x, pat, (size_t)patn) == 0) {
+				e->cy = y;
+				e->cx = x;
+				return 0;
+			}
+		}
+	}
+
+	return -1;
+}
+
+static int
+searchbackward(Eek *e, const char *pat)
+{
+	long y;
+	long x;
+	long startx;
+	long patn;
+	Line *l;
+
+	if (e == nil || pat == nil)
+		return -1;
+	patn = (long)strlen(pat);
+	if (patn <= 0)
+		return -1;
+
+	for (y = e->cy; y >= 0; y--) {
+		l = bufgetline(&e->b, y);
+		if (l == nil)
+			continue;
+		if (y == e->cy) {
+			if (e->cx > 0)
+				startx = prevutf8(e, e->cy, e->cx);
+			else
+				startx = l->n;
+		} else {
+			startx = l->n;
+		}
+		if (startx > l->n)
+			startx = l->n;
+		if (l->n < patn)
+			continue;
+		if (startx > l->n - patn)
+			startx = l->n - patn;
+		for (x = startx; x >= 0; x--) {
+			if (memcmp(l->s + x, pat, (size_t)patn) == 0) {
+				e->cy = y;
+				e->cx = x;
+				return 0;
+			}
+		}
+	}
+
+	/* wrapscan: continue at bottom */
+	for (y = e->b.nline - 1; y >= e->cy && y >= 0; y--) {
+		long lim;
+
+		l = bufgetline(&e->b, y);
+		if (l == nil)
+			continue;
+		lim = l->n;
+		if (lim < patn)
+			continue;
+		startx = lim - patn;
+		if (y == e->cy) {
+			lim = e->cx;
+			if (lim < 0)
+				lim = 0;
+			if (lim > l->n)
+				lim = l->n;
+			if (lim < patn)
+				continue;
+			startx = lim - patn;
+		}
+		for (x = startx; x >= 0; x--) {
+			if (memcmp(l->s + x, pat, (size_t)patn) == 0) {
+				e->cy = y;
+				e->cx = x;
+				return 0;
+			}
+		}
+	}
+
+	return -1;
+}
+
+static int
+searchexec(Eek *e)
+{
+	char pat[256];
+
+	if (e == nil)
+		return -1;
+	memset(pat, 0, sizeof pat);
+	memcpy(pat, e->cmd, (size_t)e->cmdn);
+	pat[e->cmdn] = 0;
+
+	if (pat[0] == 0) {
+		if (e->lastsearch == nil || e->lastsearch[0] == 0) {
+			setmsg(e, "No previous search");
+			return -1;
+		}
+		if (searchforward(e, e->lastsearch) < 0) {
+			setmsg(e, "Pattern not found: %s", e->lastsearch);
+			return -1;
+		}
+		return 0;
+	}
+
+	free(e->lastsearch);
+	e->lastsearch = strdup(pat);
+	if (e->lastsearch == nil) {
+		setmsg(e, "Out of memory");
+		return -1;
+	}
+	if (searchforward(e, pat) < 0) {
+		setmsg(e, "Pattern not found: %s", pat);
+		return -1;
+	}
+	return 0;
+}
+
+static long
+readfileinsert(Eek *e, const char *path, long at)
+{
+	FILE *fp;
+	char *line;
+	size_t cap;
+	ssize_t n;
+	long nins;
+	long pos;
+
+	if (e == nil || path == nil || *path == 0)
+		return -1;
+
+	fp = fopen(path, "r");
+	if (fp == nil)
+		return -1;
+
+	line = nil;
+	cap = 0;
+	nins = 0;
+	pos = at;
+	while ((n = getline(&line, &cap, fp)) >= 0) {
+		while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'))
+			n--;
+		if (bufinsertline(&e->b, pos, line, (long)n) < 0) {
+			free(line);
+			(void)fclose(fp);
+			return -1;
+		}
+		pos++;
+		nins++;
+	}
+	free(line);
+	(void)fclose(fp);
+	return nins;
+}
+
+static int
 setopt(Eek *e, const char *opt)
 {
 	if (opt == nil || *opt == 0)
@@ -1336,6 +1554,29 @@ cmdexec(Eek *e)
 		}
 		e->dirty = 0;
 		e->quit = 1;
+		return 0;
+	}
+
+	if (strcmp(p, "r") == 0 || strcmp(p, "read") == 0) {
+		long nins;
+		long at;
+
+		if (arg == nil || *arg == 0) {
+			setmsg(e, "No file name");
+			return -1;
+		}
+		if (undopush(e) < 0) {
+			setmsg(e, "Out of memory");
+			return -1;
+		}
+		at = e->cy + 1;
+		nins = readfileinsert(e, arg, at);
+		if (nins < 0) {
+			setmsg(e, "Read failed");
+			return -1;
+		}
+		e->dirty = 1;
+		setmsg(e, "%ld lines read", nins);
 		return 0;
 	}
 
@@ -2071,6 +2312,7 @@ main(int argc, char **argv)
 	memset(&e, 0, sizeof e);
 	bufinit(&e.b);
 	e.synenabled = Syntaxhighlight;
+	e.cmdprefix = ':';
 
 	if (argc > 1) {
 		e.fname = argv[1];
@@ -2104,12 +2346,17 @@ main(int argc, char **argv)
 			if (k.kind == Keyesc) {
 				setmode(&e, Modenormal);
 				cmdclear(&e);
+				e.cmdprefix = ':';
 				continue;
 			}
 			if (k.kind == Keyenter) {
-				(void)cmdexec(&e);
+				if (e.cmdprefix == '/')
+					(void)searchexec(&e);
+				else
+					(void)cmdexec(&e);
 				setmode(&e, Modenormal);
 				cmdclear(&e);
+				e.cmdprefix = ':';
 				continue;
 			}
 			if (k.kind == Keybackspace) {
@@ -2435,6 +2682,32 @@ main(int argc, char **argv)
 				e.lastmotioncount = 0;
 				e.seqcount = 0;
 				break;
+			case 'n':
+				if (e.lastsearch == nil || e.lastsearch[0] == 0) {
+					setmsg(&e, "No previous search");
+					break;
+				}
+				if (searchforward(&e, e.lastsearch) < 0)
+					setmsg(&e, "Pattern not found: %s", e.lastsearch);
+				e.count = 0;
+				e.opcount = 0;
+				e.lastnormalrune = 0;
+				e.lastmotioncount = 0;
+				e.seqcount = 0;
+				break;
+			case 'N':
+				if (e.lastsearch == nil || e.lastsearch[0] == 0) {
+					setmsg(&e, "No previous search");
+					break;
+				}
+				if (searchbackward(&e, e.lastsearch) < 0)
+					setmsg(&e, "Pattern not found: %s", e.lastsearch);
+				e.count = 0;
+				e.opcount = 0;
+				e.lastnormalrune = 0;
+				e.lastmotioncount = 0;
+				e.seqcount = 0;
+				break;
 			case 'v':
 				if (e.mode == Modevisual) {
 					e.dpending = 0;
@@ -2459,6 +2732,17 @@ main(int argc, char **argv)
 			case ':':
 				setmode(&e, Modecmd);
 				cmdclear(&e);
+				e.cmdprefix = ':';
+				e.lastnormalrune = 0;
+				e.lastmotioncount = 0;
+				e.seqcount = 0;
+				e.count = 0;
+				e.opcount = 0;
+				break;
+			case '/':
+				setmode(&e, Modecmd);
+				cmdclear(&e);
+				e.cmdprefix = '/';
 				e.lastnormalrune = 0;
 				e.lastmotioncount = 0;
 				e.seqcount = 0;
@@ -2614,6 +2898,7 @@ main(int argc, char **argv)
 done:
 	yclear(&e);
 	undofree(&e);
+	free(e.lastsearch);
 	setcursorshape(&e, Cursornormal);
 	termclear(&e.t);
 	termmoveto(&e.t, 0, 0);
