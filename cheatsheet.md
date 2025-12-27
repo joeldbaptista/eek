@@ -168,6 +168,31 @@ Windows:
 - Cycle active window: `Ctrl-w` then `w`
 - `:q` closes the active window when split
 
+Tabs:
+
+- New tab (optionally open a file): `:tabnew [file]`
+- Next/previous tab: `:tabn` / `:tabp` (aliases: `:tabnext` / `:tabprevious`)
+- First/last tab: `:tabfirst` / `:tablast`
+- Close current tab: `:tabclose` (alias: `:tabc`)
+- Force-close current tab: `:tabclose!`
+- Close all other tabs: `:tabonly` (force: `:tabonly!`)
+- Move current tab to position *n* (1-based): `:tabm n` (alias: `:tabmove n`)
+- List tabs: `:tabs`
+
+NORMAL mode tab keys:
+
+- Next tab: `gt`
+- Previous tab: `gT`
+- Go to tab *n*: `ngt` (example: `3gt`)
+
+NORMAL mode Space shortcuts:
+
+- New tab: `Space` then `n`
+- First tab: `Space` then `h`
+- Last tab: `Space` then `l`
+- Previous tab: `Space` then `j`
+- Next tab: `Space` then `k`
+
 Write / quit:
 
 - Write: `:w`

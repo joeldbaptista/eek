@@ -56,6 +56,23 @@ struct Undo {
 	long dirty;  /* Dirty flag at time of snapshot. */
 };
 
+typedef struct Tab Tab;
+struct Tab {
+	Buf b;         /* Tab-local buffer. */
+	char *fname;   /* File name for the tab (may be nil). */
+	int ownfname;  /* Whether fname is heap-owned. */
+	long dirty;    /* Dirty flag for the tab. */
+	int syntax;    /* Tab-local syntax selection (Syn*). */
+	Node *layout;  /* Tab-local window layout tree. */
+	Win *curwin;   /* Tab-local active window. */
+	char *lastsearch; /* Tab-local last search pattern (heap-owned) or nil. */
+	Undo *undo;    /* Tab-local undo stack. */
+	long nundo;
+	long capundo;
+	int undopending;
+	int inundo;
+};
+
 enum {
 	Synnone,
 	Sync,
@@ -136,6 +153,10 @@ struct Eek {
 	long capundo;        /* Allocated capacity of undo[] in entries. */
 	int undopending;     /* Groups multiple edits into a single undo step (e.g. INSERT session). */
 	int inundo;          /* Non-zero while restoring undo (prevents recursive snapshotting). */
+	Tab *tab;            /* Tabs (inactive tabs stored here). */
+	long ntab;           /* Number of tabs (tab slots). */
+	long captab;         /* Allocated capacity of tab[] in entries. */
+	long curtab;         /* Active tab index (tab[curtab] slot is empty). */
 };
 
 static long linelen(Eek *e, long y);
@@ -174,6 +195,16 @@ static int closecur(Eek *e);
 static int nextwin(Eek *e);
 static int focusdir(Eek *e, int dir);
 
+static void tabfree(Tab *t);
+static Tab tabtake(Eek *e);
+static void tabapply(Eek *e, Tab *t);
+static int tabsensure(Eek *e, long n);
+static int tabinit1(Eek *e);
+static int tabnew(Eek *e, const char *path);
+static int tabswitch(Eek *e, long idx);
+static int tabclose(Eek *e, int force);
+static int tabmove(Eek *e, long to);
+
 static int findfwd(Eek *e, long r, long n);
 static int subexec(Eek *e, char *line);
 static void vsellines(Eek *e, long *y0, long *y1);
@@ -181,6 +212,8 @@ static void vsellines(Eek *e, long *y0, long *y1);
 static int undopush(Eek *e);
 static void undofree(Eek *e);
 static void undopop(Eek *e);
+
+static void normalfixcursor(Eek *e);
 
 /*
  * findfwd moves the cursor to the next occurrence of rune r on the current
@@ -1714,6 +1747,321 @@ nodefree(Node *n)
 	free(n);
 }
 
+static void
+tabfree(Tab *t)
+{
+	long i;
+
+	if (t == nil)
+		return;
+	for (i = 0; i < t->nundo; i++)
+		buffree(&t->undo[i].b);
+	free(t->undo);
+	t->undo = nil;
+	t->nundo = 0;
+	t->capundo = 0;
+	t->undopending = 0;
+	t->inundo = 0;
+
+	free(t->lastsearch);
+	t->lastsearch = nil;
+
+	if (t->ownfname)
+		free(t->fname);
+	t->fname = nil;
+	t->ownfname = 0;
+
+	nodefree(t->layout);
+	t->layout = nil;
+	t->curwin = nil;
+
+	buffree(&t->b);
+	memset(&t->b, 0, sizeof t->b);
+	t->dirty = 0;
+	t->syntax = Synnone;
+}
+
+static Tab
+tabtake(Eek *e)
+{
+	Tab t;
+
+	memset(&t, 0, sizeof t);
+	if (e == nil)
+		return t;
+	/* Caller should have called winstore(e) already. */
+	t.b = e->b;
+	e->b = (Buf){0};
+	t.fname = e->fname;
+	t.ownfname = e->ownfname;
+	e->fname = nil;
+	e->ownfname = 0;
+	t.dirty = e->dirty;
+	e->dirty = 0;
+	t.syntax = e->syntax;
+	e->syntax = Synnone;
+	t.layout = e->layout;
+	t.curwin = e->curwin;
+	e->layout = nil;
+	e->curwin = nil;
+	t.lastsearch = e->lastsearch;
+	e->lastsearch = nil;
+	t.undo = e->undo;
+	t.nundo = e->nundo;
+	t.capundo = e->capundo;
+	t.undopending = e->undopending;
+	t.inundo = e->inundo;
+	e->undo = nil;
+	e->nundo = 0;
+	e->capundo = 0;
+	e->undopending = 0;
+	e->inundo = 0;
+	return t;
+}
+
+static void
+tabapply(Eek *e, Tab *t)
+{
+	if (e == nil || t == nil)
+		return;
+	e->b = t->b;
+	e->fname = t->fname;
+	e->ownfname = t->ownfname;
+	e->dirty = t->dirty;
+	e->syntax = t->syntax;
+	e->layout = t->layout;
+	e->curwin = t->curwin;
+	e->lastsearch = t->lastsearch;
+	e->undo = t->undo;
+	e->nundo = t->nundo;
+	e->capundo = t->capundo;
+	e->undopending = t->undopending;
+	e->inundo = t->inundo;
+	memset(t, 0, sizeof *t);
+}
+
+static int
+tabsensure(Eek *e, long n)
+{
+	Tab *p;
+	long cap;
+
+	if (e == nil)
+		return -1;
+	if (e->captab >= n)
+		return 0;
+	cap = e->captab > 0 ? e->captab : 4;
+	while (cap < n)
+		cap *= 2;
+	p = realloc(e->tab, (size_t)cap * sizeof e->tab[0]);
+	if (p == nil)
+		return -1;
+	/* Zero new memory. */
+	if (cap > e->captab)
+		memset(p + e->captab, 0, (size_t)(cap - e->captab) * sizeof e->tab[0]);
+	e->tab = p;
+	e->captab = cap;
+	return 0;
+}
+
+static int
+tabinit1(Eek *e)
+{
+	if (e == nil)
+		return -1;
+	if (tabsensure(e, 1) < 0)
+		return -1;
+	e->ntab = 1;
+	e->curtab = 0;
+	memset(&e->tab[0], 0, sizeof e->tab[0]);
+	return 0;
+}
+
+static int
+tabswitch(Eek *e, long idx)
+{
+	Tab t;
+	long max;
+
+	if (e == nil)
+		return -1;
+	if (idx < 0 || idx >= e->ntab)
+		return -1;
+	if (idx == e->curtab)
+		return 0;
+
+	winstore(e);
+	/* Store current tab into its slot. */
+	e->tab[e->curtab] = tabtake(e);
+	/* Load target tab from its slot and clear it. */
+	t = e->tab[idx];
+	memset(&e->tab[idx], 0, sizeof e->tab[idx]);
+	tabapply(e, &t);
+	e->curtab = idx;
+
+	/* Clamp after switching. */
+	max = e->b.nline > 0 ? e->b.nline - 1 : 0;
+	e->cy = clamp(e->cy, 0, max);
+	if (e->layout == nil || e->curwin == nil) {
+		Win *w;
+		w = malloc(sizeof *w);
+		if (w == nil)
+			return -1;
+		memset(w, 0, sizeof *w);
+		e->layout = nodeleaf(w);
+		e->curwin = w;
+	}
+	winload(e, e->curwin);
+	if (e->synenabled)
+		setsyn(e);
+	else
+		e->syntax = Synnone;
+	normalfixcursor(e);
+	return 0;
+}
+
+static int
+tabnew(Eek *e, const char *path)
+{
+	long idx;
+	Win *w;
+
+	if (e == nil)
+		return -1;
+	idx = e->ntab;
+	if (tabsensure(e, idx + 1) < 0)
+		return -1;
+	memset(&e->tab[idx], 0, sizeof e->tab[idx]);
+	e->ntab++;
+
+	/* Park current tab into its slot. */
+	winstore(e);
+	e->tab[e->curtab] = tabtake(e);
+
+	/* Build new tab state directly into editor fields. */
+	bufinit(&e->b);
+	e->fname = nil;
+	e->ownfname = 0;
+	e->dirty = 0;
+	e->syntax = Synnone;
+	free(e->lastsearch);
+	e->lastsearch = nil;
+	undofree(e);
+
+	w = malloc(sizeof *w);
+	if (w == nil)
+		return -1;
+	memset(w, 0, sizeof *w);
+	e->layout = nodeleaf(w);
+	e->curwin = w;
+	winload(e, e->curwin);
+
+	if (path && *path) {
+		e->fname = strdup(path);
+		if (e->fname == nil)
+			return -1;
+		e->ownfname = 1;
+		(void)bufload(&e->b, e->fname);
+		e->dirty = 0;
+		if (e->synenabled)
+			setsyn(e);
+	}
+
+	/* Clear the new tab slot to mark it active. */
+	memset(&e->tab[idx], 0, sizeof e->tab[idx]);
+	e->curtab = idx;
+	return 0;
+}
+
+static int
+tabclose(Eek *e, int force)
+{
+	long i;
+	Tab cur;
+	Tab next;
+	long newcur;
+
+	if (e == nil)
+		return -1;
+	if (e->ntab <= 1)
+		return -1;
+	if (e->dirty && !force)
+		return -1;
+
+	/* Free the active tab state. */
+	winstore(e);
+	cur = tabtake(e);
+	tabfree(&cur);
+
+	/* Remove the empty active slot from the tab array. */
+	for (i = e->curtab; i + 1 < e->ntab; i++)
+		e->tab[i] = e->tab[i + 1];
+	memset(&e->tab[e->ntab - 1], 0, sizeof e->tab[e->ntab - 1]);
+	e->ntab--;
+
+	newcur = e->curtab > 0 ? e->curtab - 1 : 0;
+	if (newcur >= e->ntab)
+		newcur = e->ntab - 1;
+
+	/* Load the new active tab from its slot and clear it. */
+	next = e->tab[newcur];
+	memset(&e->tab[newcur], 0, sizeof e->tab[newcur]);
+	tabapply(e, &next);
+	e->curtab = newcur;
+	winload(e, e->curwin);
+	if (e->synenabled)
+		setsyn(e);
+	else
+		e->syntax = Synnone;
+	return 0;
+}
+
+static int
+tabmove(Eek *e, long to)
+{
+	Tab cur;
+	long from;
+	long i;
+
+	if (e == nil)
+		return -1;
+	if (e->ntab <= 1)
+		return 0;
+	from = e->curtab;
+	if (to < 0)
+		to = 0;
+	if (to >= e->ntab)
+		to = e->ntab - 1;
+	if (to == from)
+		return 0;
+
+	/* Materialize the active tab into its slot, reorder, then re-activate. */
+	winstore(e);
+	e->tab[from] = tabtake(e);
+	cur = e->tab[from];
+	memset(&e->tab[from], 0, sizeof e->tab[from]);
+
+	if (to < from) {
+		for (i = from; i > to; i--)
+			e->tab[i] = e->tab[i - 1];
+		e->tab[to] = cur;
+		from = to;
+	} else {
+		for (i = from; i < to; i++)
+			e->tab[i] = e->tab[i + 1];
+		e->tab[to] = cur;
+		from = to;
+	}
+
+	/* Load the moved tab as active. */
+	cur = e->tab[from];
+	memset(&e->tab[from], 0, sizeof e->tab[from]);
+	tabapply(e, &cur);
+	e->curtab = from;
+	winload(e, e->curwin);
+	return 0;
+}
+
 static long
 nwins(Node *n)
 {
@@ -2624,6 +2972,7 @@ static void
 drawstatus(Eek *e)
 {
 	char buf[256];
+	char tbuf[64];
 	int n;
 	const char *m;
 
@@ -2634,11 +2983,15 @@ drawstatus(Eek *e)
 		n = snprintf(buf, sizeof buf, "%c%.*s", pfx, (int)e->cmdn, e->cmd);
 	} else {
 		m = e->mode == Modeinsert ? "INSERT" : (e->mode == Modevisual ? "VISUAL" : "NORMAL");
-		if (e->msg[0] != 0)
-			n = snprintf(buf, sizeof buf, " %s  %s ", m, e->msg);
+		if (e->ntab > 1)
+			snprintf(tbuf, sizeof tbuf, " tab %ld/%ld", e->curtab + 1, e->ntab);
 		else
-			n = snprintf(buf, sizeof buf, " %s  %s%s  %ld:%ld ", m,
-				e->fname ? e->fname : "[No Name]", e->dirty ? " [+]" : "", e->cy + 1, e->cx + 1);
+			tbuf[0] = 0;
+		if (e->msg[0] != 0)
+			n = snprintf(buf, sizeof buf, " %s  %s%s ", m, e->msg, tbuf);
+		else
+			n = snprintf(buf, sizeof buf, " %s  %s%s%s  %ld:%ld ", m,
+				e->fname ? e->fname : "[No Name]", e->dirty ? " [+]" : "", tbuf, e->cy + 1, e->cx + 1);
 	}
 	if (n < 0)
 		n = 0;
@@ -3232,6 +3585,7 @@ cmdexec(Eek *e)
 	char cmd[256];
 	char *p, *arg;
 	int force;
+	char *end;
 
 	memset(cmd, 0, sizeof cmd);
 	memcpy(cmd, e->cmd, (size_t)e->cmdn);
@@ -3300,6 +3654,16 @@ cmdexec(Eek *e)
 			}
 			return 0;
 		}
+		if (e->ntab > 1) {
+			if (tabclose(e, force) < 0) {
+				if (e->dirty && !force)
+					setmsg(e, "No write since last change (add !)");
+				else
+					setmsg(e, "Cannot close tab");
+				return -1;
+			}
+			return 0;
+		}
 		if (e->dirty && !force) {
 			setmsg(e, "No write since last change (add !)");
 			return -1;
@@ -3328,8 +3692,6 @@ cmdexec(Eek *e)
 		return 0;
 	}
 	if (strcmp(p, "wq") == 0) {
-		if (arg > p && arg[-1] == '!')
-			arg[-1] = 0;
 		if (e->fname == nil || e->fname[0] == 0) {
 			setmsg(e, "No file name");
 			return -1;
@@ -3346,7 +3708,155 @@ cmdexec(Eek *e)
 			}
 			return 0;
 		}
+		if (e->ntab > 1) {
+			if (tabclose(e, 0) < 0) {
+				setmsg(e, "Cannot close tab");
+				return -1;
+			}
+			return 0;
+		}
 		e->quit = 1;
+		return 0;
+	}
+
+	if (strcmp(p, "tabnew") == 0) {
+		if (tabnew(e, (arg && *arg) ? arg : nil) < 0) {
+			setmsg(e, "Cannot open tab");
+			return -1;
+		}
+		setmsg(e, "tab %ld/%ld", e->curtab + 1, e->ntab);
+		return 0;
+	}
+	if (strcmp(p, "tabn") == 0 || strcmp(p, "tabnext") == 0) {
+		long idx;
+
+		if (e->ntab <= 1) {
+			setmsg(e, "Only one tab");
+			return 0;
+		}
+		idx = -1;
+		if (arg && *arg) {
+			idx = strtol(arg, &end, 10);
+			if (end == nil || *end != 0) {
+				setmsg(e, "Bad tab index");
+				return -1;
+			}
+			idx = idx - 1;
+		} else {
+			idx = (e->curtab + 1) % e->ntab;
+		}
+		if (idx < 0)
+			idx = 0;
+		if (idx >= e->ntab)
+			idx = e->ntab - 1;
+		if (tabswitch(e, idx) < 0) {
+			setmsg(e, "Cannot switch tab");
+			return -1;
+		}
+		setmsg(e, "tab %ld/%ld", e->curtab + 1, e->ntab);
+		return 0;
+	}
+	if (strcmp(p, "tabp") == 0 || strcmp(p, "tabprevious") == 0) {
+		long idx;
+
+		if (e->ntab <= 1) {
+			setmsg(e, "Only one tab");
+			return 0;
+		}
+		idx = -1;
+		if (arg && *arg) {
+			idx = strtol(arg, &end, 10);
+			if (end == nil || *end != 0) {
+				setmsg(e, "Bad tab index");
+				return -1;
+			}
+			idx = idx - 1;
+		} else {
+			idx = e->curtab - 1;
+			if (idx < 0)
+				idx = e->ntab - 1;
+		}
+		if (idx < 0)
+			idx = 0;
+		if (idx >= e->ntab)
+			idx = e->ntab - 1;
+		if (tabswitch(e, idx) < 0) {
+			setmsg(e, "Cannot switch tab");
+			return -1;
+		}
+		setmsg(e, "tab %ld/%ld", e->curtab + 1, e->ntab);
+		return 0;
+	}
+	if (strcmp(p, "tabfirst") == 0) {
+		if (tabswitch(e, 0) < 0) {
+			setmsg(e, "Cannot switch tab");
+			return -1;
+		}
+		setmsg(e, "tab %ld/%ld", e->curtab + 1, e->ntab);
+		return 0;
+	}
+	if (strcmp(p, "tablast") == 0) {
+		if (tabswitch(e, e->ntab - 1) < 0) {
+			setmsg(e, "Cannot switch tab");
+			return -1;
+		}
+		setmsg(e, "tab %ld/%ld", e->curtab + 1, e->ntab);
+		return 0;
+	}
+	if (strcmp(p, "tabclose") == 0 || strcmp(p, "tabc") == 0) {
+		if (tabclose(e, force) < 0) {
+			if (e->dirty && !force)
+				setmsg(e, "No write since last change (add !)");
+			else
+				setmsg(e, "Cannot close tab");
+			return -1;
+		}
+		setmsg(e, "tab %ld/%ld", e->curtab + 1, e->ntab);
+		return 0;
+	}
+	if (strcmp(p, "tabm") == 0 || strcmp(p, "tabmove") == 0) {
+		long to;
+
+		if (arg == nil || *arg == 0) {
+			setmsg(e, "No tab index");
+			return -1;
+		}
+		to = strtol(arg, &end, 10);
+		if (end == nil || *end != 0) {
+			setmsg(e, "Bad tab index");
+			return -1;
+		}
+		to = to - 1;
+		if (tabmove(e, to) < 0) {
+			setmsg(e, "Cannot move tab");
+			return -1;
+		}
+		setmsg(e, "tab %ld/%ld", e->curtab + 1, e->ntab);
+		return 0;
+	}
+	if (strcmp(p, "tabs") == 0) {
+		char out[256];
+		long i;
+		long n;
+
+		memset(out, 0, sizeof out);
+		n = 0;
+		for (i = 0; i < e->ntab; i++) {
+			const char *name;
+			char mark;
+			int w;
+
+			mark = (i == e->curtab) ? '*' : ' ';
+			if (i == e->curtab)
+				name = (e->fname && e->fname[0]) ? e->fname : "[No Name]";
+			else
+				name = (e->tab[i].fname && e->tab[i].fname[0]) ? e->tab[i].fname : "[No Name]";
+			w = snprintf(out + n, sizeof out - (size_t)n, "%c%ld:%s ", mark, i + 1, name);
+			if (w < 0 || w >= (int)(sizeof out - (size_t)n))
+				break;
+			n += w;
+		}
+		setmsg(e, "%s", out);
 		return 0;
 	}
 
@@ -3358,10 +3868,213 @@ cmdexec(Eek *e)
 		return 0;
 	}
 	if (strcmp(p, "vsplit") == 0) {
+		if (e->ntab > 1) {
+			if (tabclose(e, force) < 0) {
+				if (e->dirty && !force)
+					setmsg(e, "No write since last change (add !)");
+				else
+					setmsg(e, "Cannot close tab");
+				return -1;
+			}
+			return 0;
+		}
 		if (splitcur(e, 1) < 0) {
 			setmsg(e, "Cannot vsplit");
 			return -1;
 		}
+		return 0;
+	}
+
+	if (strcmp(p, "e") == 0 || strcmp(p, "edit") == 0) {
+		int exists;
+		long n;
+		Win **arr;
+		long i;
+
+		if (arg == nil || *arg == 0) {
+			setmsg(e, "No file name");
+			return -1;
+		}
+		if (e->dirty && !force) {
+			setmsg(e, "No write since last change (add !)");
+			return -1;
+		}
+
+		/* Replace buffer contents; if missing, start a new empty buffer. */
+		exists = access(arg, F_OK) == 0;
+		if (exists) {
+			if (bufload(&e->b, arg) < 0) {
+				setmsg(e, "Open failed");
+				return -1;
+			}
+		} else {
+			buffree(&e->b);
+			bufinit(&e->b);
+		}
+
+		/* Update file name. */
+		if (e->ownfname)
+			free(e->fname);
+		e->fname = strdup(arg);
+		if (e->fname == nil) {
+			setmsg(e, "Out of memory");
+			return -1;
+		}
+		e->ownfname = 1;
+		e->dirty = 0;
+		undofree(e);
+
+		/* Reset all window/view state for the new buffer. */
+		e->cx = 0;
+		e->cy = 0;
+		e->rowoff = 0;
+		e->vax = 0;
+		e->vay = 0;
+		e->vtipending = 0;
+		e->tipending = 0;
+		e->dpending = 0;
+		e->cpending = 0;
+		e->ypending = 0;
+		e->fpending = 0;
+		e->fcount = 0;
+		e->count = 0;
+		e->opcount = 0;
+		e->seqcount = 0;
+		e->lastnormalrune = 0;
+		e->lastmotioncount = 0;
+		free(e->lastsearch);
+		e->lastsearch = nil;
+
+		n = nwins(e->layout);
+		arr = n > 0 ? malloc((size_t)n * sizeof arr[0]) : nil;
+		if (arr != nil) {
+			i = 0;
+			collectwins(e->layout, arr, &i);
+			while (i-- > 0) {
+				arr[i]->cx = 0;
+				arr[i]->cy = 0;
+				arr[i]->rowoff = 0;
+				arr[i]->vax = 0;
+				arr[i]->vay = 0;
+				arr[i]->vtipending = 0;
+			}
+			free(arr);
+		}
+		winload(e, e->curwin);
+		if (e->synenabled)
+			setsyn(e);
+		else
+			e->syntax = Synnone;
+		normalfixcursor(e);
+		return 0;
+	}
+	if (strcmp(p, "tabnew") == 0) {
+		if (tabnew(e, (arg && *arg) ? arg : nil) < 0) {
+			setmsg(e, "Cannot open tab");
+			return -1;
+		}
+		return 0;
+	}
+	if (strcmp(p, "tabn") == 0 || strcmp(p, "tabnext") == 0) {
+		if (e->ntab <= 1) {
+			setmsg(e, "Only one tab");
+			return 0;
+		}
+		if (tabswitch(e, (e->curtab + 1) % e->ntab) < 0)
+			return -1;
+		return 0;
+	}
+	if (strcmp(p, "tabp") == 0 || strcmp(p, "tabprevious") == 0) {
+		long idx;
+
+		if (e->ntab <= 1) {
+			setmsg(e, "Only one tab");
+			return 0;
+		}
+		idx = e->curtab - 1;
+		if (idx < 0)
+			idx = e->ntab - 1;
+		if (tabswitch(e, idx) < 0)
+			return -1;
+		return 0;
+	}
+	if (strcmp(p, "tabfirst") == 0) {
+		if (e->ntab <= 1) {
+			setmsg(e, "Only one tab");
+			return 0;
+		}
+		if (tabswitch(e, 0) < 0)
+			return -1;
+		return 0;
+	}
+	if (strcmp(p, "tablast") == 0) {
+		if (e->ntab <= 1) {
+			setmsg(e, "Only one tab");
+			return 0;
+		}
+		if (tabswitch(e, e->ntab - 1) < 0)
+			return -1;
+		return 0;
+	}
+	if (strcmp(p, "tabs") == 0) {
+		setmsg(e, "tab %ld/%ld", e->curtab + 1, e->ntab);
+		return 0;
+	}
+	if (strcmp(p, "tabclose") == 0 || strcmp(p, "tabc") == 0) {
+		if (tabclose(e, force) < 0) {
+			if (e->ntab <= 1)
+				setmsg(e, "Cannot close tab");
+			else if (e->dirty && !force)
+				setmsg(e, "No write since last change (add !)");
+			else
+				setmsg(e, "Cannot close tab");
+			return -1;
+		}
+		return 0;
+	}
+	if (strcmp(p, "tabm") == 0 || strcmp(p, "tabmove") == 0) {
+		long n;
+
+		if (arg == nil || *arg == 0) {
+			setmsg(e, "tabmove: missing index");
+			return -1;
+		}
+		n = strtol(arg, nil, 10);
+		if (n <= 0)
+			n = 1;
+		if (tabmove(e, n - 1) < 0)
+			return -1;
+		return 0;
+	}
+	if (strcmp(p, "tabonly") == 0 || strcmp(p, "tabo") == 0) {
+		long i;
+		long ndirty;
+
+		if (e->ntab <= 1)
+			return 0;
+		ndirty = 0;
+		for (i = 0; i < e->ntab; i++) {
+			if (i == e->curtab)
+				continue;
+			if (e->tab[i].dirty)
+				ndirty++;
+		}
+		if (ndirty > 0 && !force) {
+			setmsg(e, "Other tab(s) modified (add !)");
+			return -1;
+		}
+		for (i = 0; i < e->ntab; i++) {
+			if (i == e->curtab)
+				continue;
+			tabfree(&e->tab[i]);
+		}
+		free(e->tab);
+		e->tab = nil;
+		e->ntab = 0;
+		e->captab = 0;
+		e->curtab = 0;
+		if (tabinit1(e) < 0)
+			return -1;
 		return 0;
 	}
 
@@ -4422,6 +5135,8 @@ main(int argc, char **argv)
 	bufinit(&e.b);
 	e.synenabled = Syntaxhighlight;
 	e.cmdprefix = ':';
+	if (tabinit1(&e) < 0)
+		die("Out of memory");
 
 	if (argc > 1) {
 		e.fname = argv[1];
@@ -4926,6 +5641,73 @@ main(int argc, char **argv)
 				e.opcount = 0;
 				continue;
 			}
+			if (e.lastnormalrune == 'g' && (k.value == 't' || k.value == 'T')) {
+				long idx;
+
+				if (e.ntab <= 1) {
+					setmsg(&e, "Only one tab");
+					e.lastnormalrune = 0;
+					e.lastmotioncount = 0;
+					e.seqcount = 0;
+					e.count = 0;
+					e.opcount = 0;
+					continue;
+				}
+				if (e.seqcount > 0) {
+					idx = e.seqcount - 1;
+				} else if (k.value == 't') {
+					idx = (e.curtab + 1) % e.ntab;
+				} else {
+					idx = e.curtab - 1;
+					if (idx < 0)
+						idx = e.ntab - 1;
+				}
+				if (idx < 0)
+					idx = 0;
+				if (idx >= e.ntab)
+					idx = e.ntab - 1;
+				if (tabswitch(&e, idx) < 0)
+					setmsg(&e, "Cannot switch tab");
+				e.lastnormalrune = 0;
+				e.lastmotioncount = 0;
+				e.seqcount = 0;
+				e.count = 0;
+				e.opcount = 0;
+				continue;
+			}
+			if (e.mode == Modenormal && e.lastnormalrune == ' ' && (k.value == 'n' || k.value == 'h' || k.value == 'j' || k.value == 'k' || k.value == 'l')) {
+				long idx;
+
+				idx = e.curtab;
+				if (k.value == 'n') {
+					if (tabnew(&e, nil) < 0)
+						setmsg(&e, "Cannot open tab");
+				} else {
+					if (e.ntab <= 1) {
+						setmsg(&e, "Only one tab");
+					} else {
+						if (k.value == 'h')
+							idx = 0;
+						else if (k.value == 'l')
+							idx = e.ntab - 1;
+						else if (k.value == 'j') {
+							idx = e.curtab - 1;
+							if (idx < 0)
+								idx = e.ntab - 1;
+						} else if (k.value == 'k') {
+							idx = (e.curtab + 1) % e.ntab;
+						}
+						if (tabswitch(&e, idx) < 0)
+							setmsg(&e, "Cannot switch tab");
+					}
+				}
+				e.lastnormalrune = 0;
+				e.lastmotioncount = 0;
+				e.seqcount = 0;
+				e.count = 0;
+				e.opcount = 0;
+				continue;
+			}
 
 			switch (k.value) {
 			case 'q':
@@ -5161,6 +5943,13 @@ main(int argc, char **argv)
 				e.seqcount = e.count;
 				e.count = 0;
 				break;
+			case ' ':
+				/* Space leader: used for tab shortcuts. */
+				e.lastnormalrune = ' ';
+				e.seqcount = 0;
+				e.count = 0;
+				e.opcount = 0;
+				break;
 			case 0x17: /* Ctrl-W */
 				e.lastnormalrune = 0x17;
 				e.count = 0;
@@ -5170,7 +5959,7 @@ main(int argc, char **argv)
 				break;
 			}
 			afterkey:
-			if (k.value != 'l' && k.value != 'r' && k.value != 'g' && k.value != 0x17)
+			if (k.value != 'l' && k.value != 'r' && k.value != 'g' && k.value != ' ' && k.value != 0x17)
 				e.lastnormalrune = 0;
 			if (k.value != 'l')
 				e.lastmotioncount = 0;
@@ -5182,6 +5971,20 @@ main(int argc, char **argv)
 	}
 
 done:
+	/* Free inactive tabs (the active tab lives in e.* fields). */
+	if (e.tab != nil) {
+		long i;
+		for (i = 0; i < e.ntab; i++) {
+			if (i == e.curtab)
+				continue;
+			tabfree(&e.tab[i]);
+		}
+		free(e.tab);
+		e.tab = nil;
+		e.ntab = 0;
+		e.captab = 0;
+		e.curtab = 0;
+	}
 	yclear(&e);
 	undofree(&e);
 	nodefree(e.layout);

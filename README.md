@@ -72,6 +72,14 @@ eek implements a small subset of vi/ex style command-line commands.
 - `Ctrl-w` then `w` cycles the active window.
 - When multiple windows exist, `:q` closes the active window.
 
+### Tabs (`:tabnew`, `gt`)
+
+- `:tabnew [file]` opens a new tab (optionally loading a file into that tab).
+- `:tabn` / `:tabp` switch to next/previous tab (aliases: `:tabnext` / `:tabprevious`).
+- `gt` / `gT` switch to next/previous tab in NORMAL mode.
+- `:tabclose` closes the current tab (use `:tabclose!` to force-close if dirty).
+- When only one window exists, `:q` closes the current tab if multiple tabs exist.
+
 ### Substitute (`:s`)
 
 Syntax:
