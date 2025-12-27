@@ -2318,7 +2318,7 @@ setcursorshape(Eek *e, int shape)
 		return;
 	n = snprintf(buf, sizeof buf, "\x1b[%d q", shape);
 	if (n > 0)
-		write(e->t.fdout, buf, (size_t)n);
+		termwrite(&e->t, buf, n);
 	e->cursorshape = shape;
 }
 
@@ -3044,11 +3044,11 @@ drawstatus(Eek *e)
 	}
 	if (n < 0)
 		n = 0;
-	write(e->t.fdout, "\x1b[7m", 4);
-	write(e->t.fdout, buf, (size_t)n);
+	termwrite(&e->t, "\x1b[7m", 4);
+	termwrite(&e->t, buf, n);
 	while (n++ < e->t.col)
-		write(e->t.fdout, " ", 1);
-	write(e->t.fdout, "\x1b[m", 3);
+		termwrite(&e->t, " ", 1);
+	termwrite(&e->t, "\x1b[m", 3);
 }
 
 /*
@@ -3281,11 +3281,11 @@ synesc(int hl)
 static void
 drawattrs(Eek *e, int inv, int hl)
 {
-	write(e->t.fdout, "\x1b[m", 3);
+	termwrite(&e->t, "\x1b[m", 3);
 	if (inv)
-		write(e->t.fdout, "\x1b[7m", 4);
+		termwrite(&e->t, "\x1b[7m", 4);
 	if (hl != Hlnone)
-		write(e->t.fdout, synesc(hl), strlen(synesc(hl)));
+		termwrite(&e->t, synesc(hl), (long)strlen(synesc(hl)));
 }
 
 /*
@@ -4183,7 +4183,7 @@ draw(Eek *e)
 	if (e == nil)
 		return;
 
-	write(e->t.fdout, "\x1b[?25l", 6);
+	termwrite(&e->t, "\x1b[?25l", 6);
 	textrows = e->t.row - 1;
 	if (textrows < 1)
 		textrows = 1;
@@ -4242,11 +4242,11 @@ draw(Eek *e)
 					rx = 0;
 					if (filerow >= e->b.nline) {
 						if (collim > 0) {
-							write(e->t.fdout, "~", 1);
+							termwrite(&e->t, "~", 1);
 							rx = 1;
 						}
 						while (rx++ < collim)
-							write(e->t.fdout, " ", 1);
+							termwrite(&e->t, " ", 1);
 						continue;
 					}
 					if (gutter && collim > 0) {
@@ -4266,14 +4266,14 @@ draw(Eek *e)
 						if (nn > 0) {
 							if (nn > collim)
 								nn = collim;
-							write(e->t.fdout, nbuf, (size_t)nn);
+							termwrite(&e->t, nbuf, nn);
 							rx += nn;
 						}
 					}
 					l = bufgetline(&e->b, filerow);
 					if (l == nil || l->n == 0) {
 						while (rx++ < collim)
-							write(e->t.fdout, " ", 1);
+							termwrite(&e->t, " ", 1);
 						continue;
 					}
 
@@ -4414,7 +4414,7 @@ draw(Eek *e)
 
 							nsp = TABSTOP - (tx % TABSTOP);
 							while (nsp-- > 0 && rx < collim) {
-								write(e->t.fdout, " ", 1);
+								termwrite(&e->t, " ", 1);
 								tx++;
 								rx++;
 							}
@@ -4432,7 +4432,7 @@ draw(Eek *e)
 						if (i + n > l->n)
 							n = l->n - i;
 						if (rx < collim)
-							write(e->t.fdout, &l->s[i], (size_t)n);
+							termwrite(&e->t, &l->s[i], n);
 						if (e->syntax == Sync) {
 							if (openstring) {
 								instr = 1;
@@ -4472,9 +4472,9 @@ draw(Eek *e)
 						i += n;
 					}
 					if (curinv || curhl != Hlnone)
-						write(e->t.fdout, "\x1b[m", 3);
+						termwrite(&e->t, "\x1b[m", 3);
 					while (rx++ < collim)
-						write(e->t.fdout, " ", 1);
+						termwrite(&e->t, " ", 1);
 				}
 				continue;
 			}
@@ -4496,7 +4496,7 @@ draw(Eek *e)
 					int yy;
 					for (yy = 0; yy < rr.h; yy++) {
 						termmoveto(&e->t, rr.y + yy, rr.x + aW);
-						write(e->t.fdout, "|", 1);
+						termwrite(&e->t, "|", 1);
 					}
 				}
 			} else {
@@ -4510,7 +4510,7 @@ draw(Eek *e)
 					int xx;
 					termmoveto(&e->t, rr.y + aH, rr.x);
 					for (xx = 0; xx < rr.w; xx++)
-						write(e->t.fdout, "-", 1);
+						termwrite(&e->t, "-", 1);
 				}
 			}
 
@@ -4531,7 +4531,7 @@ draw(Eek *e)
 	/* Restore active view state for status line and cursor placement. */
 	winload(e, e->curwin);
 	termmoveto(&e->t, (int)textrows, 0);
-	write(e->t.fdout, "\x1b[K", 3);
+	termwrite(&e->t, "\x1b[K", 3);
 	drawstatus(e);
 
 	cur = root;
@@ -4556,7 +4556,8 @@ draw(Eek *e)
 		cyabs = cur.y + (int)cyrel;
 		termmoveto(&e->t, cyabs, cxabs);
 	}
-	write(e->t.fdout, "\x1b[?25h", 6);
+	termwrite(&e->t, "\x1b[?25h", 6);
+	termflush(&e->t);
 }
 
 /*
@@ -6198,6 +6199,11 @@ done:
 	setcursorshape(&e, Cursornormal);
 	termclear(&e.t);
 	termmoveto(&e.t, 0, 0);
+	termflush(&e.t);
+	free(e.t.out);
+	e.t.out = nil;
+	e.t.outn = 0;
+	e.t.outcap = 0;
 	termrestore();
 	if (e.ownfname)
 		free(e.fname);

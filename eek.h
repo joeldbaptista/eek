@@ -29,6 +29,9 @@ struct Term {
 	int fdout; /* Output fd (usually stdout). */
 	int row;   /* Terminal rows. */
 	int col;   /* Terminal columns. */
+	char *out; /* Buffered output bytes (optional). */
+	long outn; /* Number of bytes used in out[]. */
+	long outcap; /* Capacity of out[] in bytes. */
 };
 
 /*
@@ -98,6 +101,14 @@ void termclear(Term *t);
  *  - void.
  */
 void termmoveto(Term *t, int r, int c);
+
+/*
+ * Buffered output helpers.
+ * These append to t->out and are flushed by termflush().
+ */
+void termwrite(Term *t, const void *data, long n);
+void termputc(Term *t, char c);
+void termrepeat(Term *t, char c, int n);
 
 /*
  * termflush flushes any buffered terminal output, if applicable.

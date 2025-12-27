@@ -64,6 +64,9 @@ terminit(Term *t)
 
 	t->fdin = 0;
 	t->fdout = 1;
+	t->out = nil;
+	t->outn = 0;
+	t->outcap = 0;
 
 	if (tcgetattr(t->fdin, &oldtio) < 0)
 		die("tcgetattr: %s", strerror(errno));
@@ -83,6 +86,67 @@ terminit(Term *t)
 		die("sigaction(SIGWINCH): %s", strerror(errno));
 
 	termgetwinsz(t);
+}
+
+static void
+termbufensure(Term *t, long need)
+{
+	char *p;
+	long cap;
+
+	if (t == nil)
+		return;
+	if (need <= t->outcap)
+		return;
+	cap = t->outcap > 0 ? t->outcap : 4096;
+	while (cap < need) {
+		if (cap > (1L << 26))
+			break;
+		cap *= 2;
+	}
+	p = realloc(t->out, (size_t)cap);
+	if (p == nil)
+		return;
+	t->out = p;
+	t->outcap = cap;
+}
+
+void
+termwrite(Term *t, const void *data, long n)
+{
+	if (t == nil || data == nil || n <= 0)
+		return;
+	if (t->outn + n < t->outn)
+		return;
+	termbufensure(t, t->outn + n);
+	if (t->outcap < t->outn + n)
+		return;
+	memcpy(t->out + t->outn, data, (size_t)n);
+	t->outn += n;
+}
+
+void
+termputc(Term *t, char c)
+{
+	termwrite(t, &c, 1);
+}
+
+void
+termrepeat(Term *t, char c, int n)
+{
+	char buf[64];
+	int i;
+
+	if (n <= 0)
+		return;
+	for (i = 0; i < (int)sizeof buf; i++)
+		buf[i] = c;
+	while (n > 0) {
+		int chunk;
+		chunk = n > (int)sizeof buf ? (int)sizeof buf : n;
+		termwrite(t, buf, chunk);
+		n -= chunk;
+	}
 }
 
 /*
@@ -152,9 +216,8 @@ termgetwinsz(Term *t)
 void
 termclear(Term *t)
 {
-	(void)t;
-	write(1, "\x1b[2J", 4);
-	write(1, "\x1b[H", 3);
+	termwrite(t, "\x1b[2J", 4);
+	termwrite(t, "\x1b[H", 3);
 }
 
 /*
@@ -174,10 +237,9 @@ termmoveto(Term *t, int r, int c)
 	char buf[64];
 	int n;
 
-	(void)t;
 	n = snprintf(buf, sizeof buf, "\x1b[%d;%dH", r + 1, c + 1);
 	if (n > 0)
-		write(1, buf, (size_t)n);
+		termwrite(t, buf, n);
 }
 
 /*
@@ -192,5 +254,22 @@ termmoveto(Term *t, int r, int c)
 void
 termflush(Term *t)
 {
-	(void)t;
+	long off;
+
+	if (t == nil)
+		return;
+	if (t->out == nil || t->outn <= 0) {
+		t->outn = 0;
+		return;
+	}
+	off = 0;
+	while (off < t->outn) {
+		ssize_t w;
+		w = write(t->fdout, t->out + off, (size_t)(t->outn - off));
+		if (w <= 0)
+			break;
+		off += (long)w;
+	}
+	/* Drop the frame even if partial; next draw will repaint anyway. */
+	t->outn = 0;
 }
