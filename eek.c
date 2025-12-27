@@ -1,5 +1,6 @@
 
 #include <errno.h>
+#include <regex.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -101,6 +102,7 @@ struct Eek {
 static long linelen(Eek *e, long y);
 static long prevutf8(Eek *e, long y, long at);
 static long nextutf8(Eek *e, long y, long at);
+static void setmsg(Eek *e, const char *fmt, ...);
 static long utf8enc(long r, char *s);
 static int insertbytes(Eek *e, const char *s, long n);
 static int insertnl(Eek *e);
@@ -120,6 +122,7 @@ static const char *synesc(int hl);
 static void drawattrs(Eek *e, int inv, int hl);
 
 static int findfwd(Eek *e, long r, long n);
+static int subexec(Eek *e, char *line);
 
 static int undopush(Eek *e);
 static void undofree(Eek *e);
@@ -177,6 +180,495 @@ findfwd(Eek *e, long r, long n)
 			break;
 	}
 	return -1;
+}
+
+/*
+ * bytesfind finds the first occurrence of needle in haystack.
+ *
+ * Parameters:
+ *  hay: haystack bytes.
+ *  hayn: length of haystack.
+ *  needle: needle bytes.
+ *  needlen: length of needle.
+ *
+ * Returns:
+ *  Byte offset of first match, or -1 if not found.
+ */
+static long
+bytesfind(const char *hay, long hayn, const char *needle, long needlen)
+{
+	long i;
+
+	if (hay == nil || needle == nil)
+		return -1;
+	if (needlen <= 0)
+		return 0;
+	if (hayn < needlen)
+		return -1;
+
+	for (i = 0; i + needlen <= hayn; i++) {
+		if (memcmp(hay + i, needle, (size_t)needlen) == 0)
+			return i;
+	}
+	return -1;
+}
+
+/*
+ * findlinecontains finds a line whose bytes contain the given substring.
+ *
+ * The search starts at the current line and wraps.
+ *
+ * Parameters:
+ *  e: editor state.
+ *  s: substring bytes.
+ *  n: length of substring.
+ *
+ * Returns:
+ *  0-based line index on success, -1 on failure.
+ */
+static long
+findlinecontains(Eek *e, const char *s, long n)
+{
+	long y;
+	Line *l;
+
+	if (e == nil || s == nil)
+		return -1;
+	if (e->b.nline <= 0)
+		return -1;
+
+	for (y = e->cy; y < e->b.nline; y++) {
+		l = bufgetline(&e->b, y);
+		if (l != nil && bytesfind(l->s, l->n, s, n) >= 0)
+			return y;
+	}
+	for (y = 0; y < e->cy; y++) {
+		l = bufgetline(&e->b, y);
+		if (l != nil && bytesfind(l->s, l->n, s, n) >= 0)
+			return y;
+	}
+	return -1;
+}
+
+/*
+ * parseaddr parses a single ex address from *pp.
+ *
+ * Supported forms:
+ *  .            current line
+ *  n            absolute line number
+ *  $            last line
+ *  /string/     a line containing "string" (search forward with wrap)
+ *
+ * An address may be followed by one or more +n / -n offsets.
+ *
+ * Parameters:
+ *  e: editor state.
+ *  pp: in/out pointer to parse cursor.
+ *  out: output 0-based line index.
+ *
+ * Returns:
+ *  1 if an address was parsed, 0 if none is present, -1 on syntax/error.
+ */
+static int
+parseaddr(Eek *e, char **pp, long *out)
+{
+	char *p;
+	long base;
+
+	if (e == nil || pp == nil || *pp == nil || out == nil)
+		return -1;
+	p = *pp;
+	while (*p == ' ' || *p == '\t')
+		p++;
+	if (*p == 0)
+		return 0;
+
+	base = -1;
+	if (*p == '.') {
+		base = e->cy;
+		p++;
+	} else if (*p == '$') {
+		base = e->b.nline > 0 ? e->b.nline - 1 : 0;
+		p++;
+	} else if (*p >= '0' && *p <= '9') {
+		char *end;
+		long n;
+
+		errno = 0;
+		n = strtol(p, &end, 10);
+		if (end == p || errno)
+			return -1;
+		base = n - 1;
+		p = end;
+	} else if (*p == '/') {
+		char *q;
+		long n;
+		char *pat;
+		long y;
+
+		p++;
+		q = p;
+		while (*q && *q != '/')
+			q++;
+		if (*q != '/')
+			return -1;
+		n = (long)(q - p);
+		pat = malloc((size_t)n + 1);
+		if (pat == nil)
+			return -1;
+		memcpy(pat, p, (size_t)n);
+		pat[n] = 0;
+		y = findlinecontains(e, pat, n);
+		free(pat);
+		if (y < 0)
+			return -1;
+		base = y;
+		p = q + 1;
+	} else {
+		return 0;
+	}
+
+	for (;;) {
+		long sign;
+		char *end;
+		long off;
+
+		while (*p == ' ' || *p == '\t')
+			p++;
+		if (*p != '+' && *p != '-')
+			break;
+		sign = (*p == '-') ? -1 : 1;
+		p++;
+		errno = 0;
+		off = strtol(p, &end, 10);
+		if (end == p || errno)
+			return -1;
+		base += sign * off;
+		p = end;
+	}
+
+	if (base < 0)
+		base = 0;
+	if (base >= e->b.nline)
+		base = e->b.nline > 0 ? e->b.nline - 1 : 0;
+	*out = base;
+	*pp = p;
+	return 1;
+}
+
+/*
+ * subline applies a compiled regex substitution to a single line.
+ *
+ * Parameters:
+ *  re: compiled regex for the pattern.
+ *  repl: replacement string.
+ *  global: non-zero replaces all matches on the line.
+ *  l: line to update.
+ *  nsub: output number of substitutions performed on this line.
+ *
+ * Returns:
+ *  0 on success, -1 on allocation failure.
+ */
+static int
+subline(regex_t *re, const char *repl, int global, Line *l, long *nsub)
+{
+	char *in;
+	char *out;
+	long outn;
+	long outcap;
+	regmatch_t m[1];
+	long at;
+	int rc;
+
+	if (nsub)
+		*nsub = 0;
+	if (re == nil || repl == nil || l == nil)
+		return -1;
+
+	in = malloc((size_t)l->n + 1);
+	if (in == nil)
+		return -1;
+	memcpy(in, l->s, (size_t)l->n);
+	in[l->n] = 0;
+
+	out = nil;
+	outn = 0;
+	outcap = 0;
+	at = 0;
+
+	for (;;) {
+		rc = regexec(re, in + at, 1, m, 0);
+		if (rc != 0)
+			break;
+		if (m[0].rm_so < 0 || m[0].rm_eo < 0)
+			break;
+		{
+			long so, eo;
+			long need;
+			long matchlen;
+			long repln;
+
+			so = at + (long)m[0].rm_so;
+			eo = at + (long)m[0].rm_eo;
+			if (so < at)
+				so = at;
+			if (eo < so)
+				eo = so;
+			matchlen = eo - so;
+			repln = (long)strlen(repl);
+
+			need = outn + (so - at) + repln + (l->n - eo) + 1;
+			if (need > outcap) {
+				long ncap;
+				char *p;
+
+				ncap = outcap > 0 ? outcap * 2 : 64;
+				while (ncap < need)
+					ncap *= 2;
+				p = realloc(out, (size_t)ncap);
+				if (p == nil) {
+					free(out);
+					free(in);
+					return -1;
+				}
+				out = p;
+				outcap = ncap;
+			}
+
+			memcpy(out + outn, in + at, (size_t)(so - at));
+			outn += so - at;
+			memcpy(out + outn, repl, (size_t)repln);
+			outn += repln;
+			if (nsub)
+				(*nsub)++;
+
+			if (!global) {
+				memcpy(out + outn, in + eo, (size_t)(l->n - eo));
+				outn += l->n - eo;
+				at = l->n;
+				break;
+			}
+
+			if (matchlen == 0) {
+				if (eo < l->n) {
+					out[outn++] = in[eo];
+					at = eo + 1;
+				} else {
+					at = eo;
+				}
+			} else {
+				at = eo;
+			}
+			if (at >= l->n)
+				break;
+		}
+	}
+
+	if (out == nil) {
+		free(in);
+		return 0;
+	}
+	if (at < l->n) {
+		long need;
+		char *p;
+
+		need = outn + (l->n - at) + 1;
+		if (need > outcap) {
+			p = realloc(out, (size_t)need);
+			if (p == nil) {
+				free(out);
+				free(in);
+				return -1;
+			}
+			out = p;
+			outcap = need;
+		}
+		memcpy(out + outn, in + at, (size_t)(l->n - at));
+		outn += l->n - at;
+	}
+
+	if (outn == l->n && memcmp(out, l->s, (size_t)l->n) == 0) {
+		free(out);
+		free(in);
+		if (nsub)
+			*nsub = 0;
+		return 0;
+	}
+
+	free(l->s);
+	l->s = out;
+	l->n = outn;
+	l->cap = outcap;
+	free(in);
+	return 0;
+}
+
+/*
+ * subexec executes an ex-style substitute command.
+ *
+ * Syntax:
+ *  :[address]s/old/new/flags
+ *  :[addr1],[addr2]s/old/new/flags
+ *  :%s/old/new/flags
+ *
+ * Supported address forms are implemented by parseaddr(). Supported flags:
+ *  g  replace all matches on each line.
+ *
+ * Parameters:
+ *  e: editor state.
+ *  line: mutable command line (no leading ':').
+ *
+ * Returns:
+ *  1 if the command was recognized (even on error), 0 if not a substitute
+ *  command.
+ */
+static int
+subexec(Eek *e, char *line)
+{
+	char *p;
+	long a0, a1;
+	int havea0;
+	int havea1;
+	regex_t re;
+	int reok;
+	char delim;
+	char *old;
+	char *new;
+	int global;
+	long y;
+	long nsub;
+	long nline;
+
+	if (e == nil || line == nil)
+		return 0;
+
+	p = line;
+	while (*p == ' ' || *p == '\t')
+		p++;
+	if (*p == 0)
+		return 0;
+
+	global = 0;
+	a0 = e->cy;
+	a1 = e->cy;
+	havea0 = 0;
+	havea1 = 0;
+
+	if (*p == '%') {
+		a0 = 0;
+		a1 = e->b.nline > 0 ? e->b.nline - 1 : 0;
+		havea0 = havea1 = 1;
+		p++;
+	} else {
+		int r;
+
+		r = parseaddr(e, &p, &a0);
+		if (r < 0)
+			return 1;
+		if (r > 0)
+			havea0 = 1;
+		a1 = a0;
+		if (*p == ',') {
+			p++;
+			r = parseaddr(e, &p, &a1);
+			if (r < 0)
+				return 1;
+			if (r == 0) {
+				a1 = e->b.nline > 0 ? e->b.nline - 1 : 0;
+			} else {
+				havea1 = 1;
+			}
+			if (!havea0)
+				a0 = e->cy;
+		}
+	}
+
+	while (*p == ' ' || *p == '\t')
+		p++;
+	if (*p != 's')
+		return 0;
+	p++;
+
+	if (*p == 0)
+		return 1;
+	delim = *p++;
+	if (delim == 0)
+		return 1;
+
+	old = p;
+	while (*p && *p != delim)
+		p++;
+	if (*p != delim)
+		return 1;
+	*p++ = 0;
+
+	new = p;
+	while (*p && *p != delim)
+		p++;
+	if (*p != delim)
+		return 1;
+	*p++ = 0;
+
+	while (*p) {
+		if (*p == 'g')
+			global = 1;
+		p++;
+	}
+
+	reok = 0;
+	if (regcomp(&re, old, REG_EXTENDED) != 0) {
+		setmsg(e, "Bad regex");
+		return 1;
+	}
+	reok = 1;
+
+	if (a0 > a1) {
+		long t;
+		t = a0;
+		a0 = a1;
+		a1 = t;
+	}
+	if (a0 < 0)
+		a0 = 0;
+	if (a1 >= e->b.nline)
+		a1 = e->b.nline > 0 ? e->b.nline - 1 : 0;
+
+	if (undopush(e) < 0) {
+		setmsg(e, "Out of memory");
+		if (reok)
+			regfree(&re);
+		return 1;
+	}
+
+	nsub = 0;
+	nline = 0;
+	for (y = a0; y <= a1 && y < e->b.nline; y++) {
+		Line *l;
+		long nsl;
+
+		l = bufgetline(&e->b, y);
+		if (l == nil)
+			continue;
+		nsl = 0;
+		if (subline(&re, new, global, l, &nsl) < 0) {
+			setmsg(e, "Out of memory");
+			regfree(&re);
+			return 1;
+		}
+		if (nsl > 0) {
+			nsub += nsl;
+			nline++;
+		}
+	}
+	regfree(&re);
+
+	if (nsub == 0) {
+		setmsg(e, "Pattern not found");
+		return 1;
+	}
+	e->dirty = 1;
+	setmsg(e, "%ld substitutions on %ld lines", nsub, nline);
+	return 1;
 }
 
 /*
@@ -2112,6 +2604,8 @@ cmdexec(Eek *e)
 	p = cmd;
 	while (*p == ' ' || *p == '\t')
 		p++;
+	if (subexec(e, p))
+		return 0;
 	arg = p;
 	while (*arg && *arg != ' ' && *arg != '\t')
 		arg++;

@@ -61,6 +61,42 @@ Configuration lives in `config.h`.
 - Start from `config.def.h`.
 - Edit `config.h` and rebuild.
 
+## Commands
+
+eek implements a small subset of vi/ex style command-line commands.
+
+### Substitute (`:s`)
+
+Syntax:
+
+- `:[address]s/old_text/new_text/`
+- `:[addr1],[addr2]s/old_text/new_text/`
+- `:%s/old_text/new_text/`
+
+Notes:
+
+- `old_text` is a POSIX extended regular expression.
+- Add `g` at the end to replace every match on each addressed line: `.../g`.
+
+Address forms:
+
+- `.` current line
+- `n` line number `n`
+- `.+m` / `.-m` current line plus/minus `m`
+- `$` last line
+- `/string/` a line that contains `string` (searches forward with wrap)
+- `%` entire file
+- `[addr1],[addr2]` a range (inclusive)
+
+Examples:
+
+- Replace the first `Banana` with `Kumquat` in each of 11 lines starting at the current line:
+	- `:.,.+10s/Banana/Kumquat/`
+- Replace every occurrence of `apple` with `pear` in the entire file:
+	- `:%s/apple/pear/g`
+- Remove the last character from every line (useful to strip CR when lines end in `^M`):
+	- `:%s/.$//`
+
 ## Comments
 
 eek follows the suckless approach: comments should be sparse and useful. The code should be readable without narration; when something *isn't* obvious (or has sharp edges), we write a small, consistent comment instead of a large explanation.
@@ -254,7 +290,7 @@ eek is intentionally minimal, but there are several improvements that fit the â€
 
 ### Motions and text objects
 
-- Character find motions: `f{c}`, `F{c}`, `t{c}`, `T{c}` plus repeats `;` and `,`.
+- More character find motions: `F{c}`, `t{c}`, `T{c}` plus repeats `;` and `,`.
 - Better line navigation: `^` (first non-blank), `H`/`M`/`L` (top/middle/bottom of the viewport).
 - Paragraph movement: `{` and `}` (blank-line separated).
 - Word text objects: `iw` / `aw` so `diw`, `ciw`, `yiw` become available.
