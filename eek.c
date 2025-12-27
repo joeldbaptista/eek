@@ -78,6 +78,8 @@ struct Eek {
 	long dpending;       /* Pending delete operator ('d' has been typed). */
 	long cpending;       /* Pending change operator ('c' has been typed). */
 	long ypending;       /* Pending yank operator ('y' has been typed). */
+	long fpending;       /* Pending find-char motion ('f' has been typed). */
+	long fcount;         /* Count for pending find motion (nth occurrence). */
 	long tipending;      /* Pending text-object modifier (e.g. 'di' waiting for delimiter). */
 	long tiop;           /* Text-object operator that is pending ('d' or 'c'). */
 	long vax;            /* VISUAL anchor x (byte offset). */
@@ -99,6 +101,7 @@ struct Eek {
 static long linelen(Eek *e, long y);
 static long prevutf8(Eek *e, long y, long at);
 static long nextutf8(Eek *e, long y, long at);
+static long utf8enc(long r, char *s);
 static int insertbytes(Eek *e, const char *s, long n);
 static int insertnl(Eek *e);
 static void wordtarget(Eek *e, long *ty, long *tx);
@@ -116,9 +119,65 @@ static void synscanline(Line *l, SynState *s);
 static const char *synesc(int hl);
 static void drawattrs(Eek *e, int inv, int hl);
 
+static int findfwd(Eek *e, long r, long n);
+
 static int undopush(Eek *e);
 static void undofree(Eek *e);
 static void undopop(Eek *e);
+
+/*
+ * findfwd moves the cursor to the next occurrence of rune r on the current
+ * line, searching forward.
+ *
+ * The search is UTF-8 aware: r is encoded to UTF-8 bytes and matched against
+ * the line buffer at codepoint boundaries.
+ *
+ * Parameters:
+ *  e: editor state.
+ *  r: rune to search for.
+ *  n: occurrence count (1 means the next match).
+ *
+ * Returns:
+ *  0 if a match is found and the cursor is moved, -1 otherwise.
+ */
+static int
+findfwd(Eek *e, long r, long n)
+{
+	Line *l;
+	char pat[8];
+	long patn;
+	long x;
+
+	if (e == nil)
+		return -1;
+	if (n <= 0)
+		n = 1;
+	if (r < 0x20)
+		return -1;
+
+	l = bufgetline(&e->b, e->cy);
+	if (l == nil)
+		return -1;
+	patn = utf8enc(r, pat);
+	if (patn <= 0)
+		return -1;
+	if (patn > l->n)
+		return -1;
+
+	x = nextutf8(e, e->cy, e->cx);
+	for (; x + patn <= l->n; x = nextutf8(e, e->cy, x)) {
+		if (memcmp(l->s + x, pat, (size_t)patn) == 0) {
+			n--;
+			if (n == 0) {
+				e->cx = x;
+				return 0;
+			}
+		}
+		if (x >= l->n)
+			break;
+	}
+	return -1;
+}
 
 /*
  * poslt compares two (y, x) positions.
@@ -3158,6 +3217,8 @@ main(int argc, char **argv)
 				e.dpending = 0;
 				e.cpending = 0;
 				e.ypending = 0;
+				e.fpending = 0;
+				e.fcount = 0;
 				e.tipending = 0;
 				e.vtipending = 0;
 				normalfixcursor(&e);
@@ -3195,6 +3256,8 @@ main(int argc, char **argv)
 			e.dpending = 0;
 			e.cpending = 0;
 			e.ypending = 0;
+			e.fpending = 0;
+			e.fcount = 0;
 			e.tipending = 0;
 			e.vtipending = 0;
 			e.lastnormalrune = 0;
@@ -3204,6 +3267,24 @@ main(int argc, char **argv)
 			e.opcount = 0;
 			if (e.mode == Modevisual)
 				setmode(&e, Modenormal);
+			continue;
+		}
+
+		if (e.fpending) {
+			e.fpending = 0;
+			if (k.kind == Keyrune) {
+				long n;
+
+				n = e.fcount;
+				e.fcount = 0;
+				if (findfwd(&e, k.value, n) < 0)
+					setmsg(&e, "Not found: %lc", (long)k.value);
+			}
+			e.lastnormalrune = 0;
+			e.lastmotioncount = 0;
+			e.seqcount = 0;
+			e.count = 0;
+			e.opcount = 0;
 			continue;
 		}
 
@@ -3483,6 +3564,8 @@ main(int argc, char **argv)
 					e.dpending = 0;
 					e.cpending = 0;
 					e.ypending = 0;
+					e.fpending = 0;
+					e.fcount = 0;
 					e.tipending = 0;
 					e.vtipending = 0;
 					setmode(&e, Modenormal);
@@ -3490,6 +3573,8 @@ main(int argc, char **argv)
 					e.dpending = 0;
 					e.cpending = 0;
 					e.ypending = 0;
+					e.fpending = 0;
+					e.fcount = 0;
 					e.tipending = 0;
 					e.vay = e.cy;
 					e.vax = e.cx;
@@ -3539,6 +3624,15 @@ main(int argc, char **argv)
 				e.opcount = countval(e.count);
 				e.count = 0;
 				e.ypending = 1;
+				e.lastnormalrune = 0;
+				e.lastmotioncount = 0;
+				e.seqcount = 0;
+				break;
+			case 'f':
+				e.fpending = 1;
+				e.fcount = countval(e.count);
+				e.count = 0;
+				e.opcount = 0;
 				e.lastnormalrune = 0;
 				e.lastmotioncount = 0;
 				e.seqcount = 0;
