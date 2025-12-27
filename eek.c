@@ -14,6 +14,32 @@
 
 typedef struct Eek Eek;
 
+typedef struct Win Win;
+struct Win {
+	long cx;        /* Cursor x (byte offset within line). */
+	long cy;        /* Cursor y (line index). */
+	long rowoff;    /* Topmost visible line (scroll offset). */
+	long vax;       /* VISUAL anchor x (byte offset). */
+	long vay;       /* VISUAL anchor y (line index). */
+	long vtipending;/* VISUAL pending text-object modifier. */
+};
+
+typedef struct Node Node;
+struct Node {
+	int split; /* 0=leaf, 1=horizontal, 2=vertical */
+	Node *a;
+	Node *b;
+	Win *w;
+};
+
+typedef struct Rect Rect;
+struct Rect {
+	int x;
+	int y;
+	int w;
+	int h;
+};
+
 typedef struct Undo Undo;
 struct Undo {
 	Buf b;       /* Snapshot of the full text buffer. */
@@ -86,6 +112,8 @@ struct Eek {
 	long vax;            /* VISUAL anchor x (byte offset). */
 	long vay;            /* VISUAL anchor y (line index). */
 	long vtipending;     /* VISUAL pending text-object modifier. */
+	Node *layout;        /* Window layout tree (leaves are windows). */
+	Win *curwin;         /* Active window (mirrored into cx/cy/rowoff/v* fields). */
 	char cmd[256];       /* Command-line buffer (for ':' and '/' prompts). */
 	long cmdn;           /* Number of bytes used in cmd. */
 	char cmdprefix;      /* Prompt prefix character (':' or '/'). */
@@ -104,6 +132,7 @@ struct Eek {
 };
 
 static long linelen(Eek *e, long y);
+static long clamp(long v, long lo, long hi);
 static long prevutf8(Eek *e, long y, long at);
 static long nextutf8(Eek *e, long y, long at);
 static void setmsg(Eek *e, const char *fmt, ...);
@@ -124,6 +153,18 @@ static void synscanuntil(Eek *e, long upto, SynState *s);
 static void synscanline(Line *l, SynState *s);
 static const char *synesc(int hl);
 static void drawattrs(Eek *e, int inv, int hl);
+
+static Win *winnewfrom(Eek *e);
+static void winload(Eek *e, Win *w);
+static void winstore(Eek *e);
+static void winclamp(Eek *e, Win *w);
+static long nwins(Node *n);
+static void collectwins(Node *n, Win **out, long *i);
+static int findrect(Node *n, Win *w, Rect r, Rect *out);
+static Node *findleaf(Node *n, Win *w, Node **parent, int *isleft);
+static int splitcur(Eek *e, int vertical);
+static int closecur(Eek *e);
+static int nextwin(Eek *e);
 
 static int findfwd(Eek *e, long r, long n);
 static int subexec(Eek *e, char *line);
@@ -1483,17 +1524,372 @@ ndigits(long n)
  *  - gutter width in terminal columns (0 if disabled or too narrow).
  */
 static int
-gutterwidth(Eek *e)
+gutterwidth(Eek *e, int cols)
 {
 	int w;
 
 	if (!e->linenumbers && !e->relativenumbers)
 		return 0;
 	w = ndigits(e->b.nline > 0 ? e->b.nline : 1) + 1;
-	if (w >= e->t.col)
+	if (w >= cols)
 		return 0;
 	return w;
 }
+
+/*
+ * winnewfrom allocates a window and initializes it from the editor view state.
+ */
+static Win *
+winnewfrom(Eek *e)
+{
+	Win *w;
+
+	w = malloc(sizeof *w);
+	if (w == nil)
+		return nil;
+	memset(w, 0, sizeof *w);
+	w->cx = e->cx;
+	w->cy = e->cy;
+	w->rowoff = e->rowoff;
+	w->vax = e->vax;
+	w->vay = e->vay;
+	w->vtipending = e->vtipending;
+	return w;
+}
+
+/*
+ * winload loads window state into the editor view fields.
+ */
+static void
+winload(Eek *e, Win *w)
+{
+	if (e == nil || w == nil)
+		return;
+	e->cx = w->cx;
+	e->cy = w->cy;
+	e->rowoff = w->rowoff;
+	e->vax = w->vax;
+	e->vay = w->vay;
+	e->vtipending = w->vtipending;
+}
+
+/*
+ * winstore writes the current editor view fields back into the active window.
+ */
+static void
+winstore(Eek *e)
+{
+	Win *w;
+
+	if (e == nil)
+		return;
+	w = e->curwin;
+	if (w == nil)
+		return;
+	w->cx = e->cx;
+	w->cy = e->cy;
+	w->rowoff = e->rowoff;
+	w->vax = e->vax;
+	w->vay = e->vay;
+	w->vtipending = e->vtipending;
+}
+
+/*
+ * winclamp clamps a window cursor/scroll state into valid buffer bounds.
+ */
+static void
+winclamp(Eek *e, Win *w)
+{
+	long maxy;
+	long len;
+
+	if (e == nil || w == nil)
+		return;
+	maxy = e->b.nline > 0 ? e->b.nline - 1 : 0;
+	w->cy = clamp(w->cy, 0, maxy);
+	len = linelen(e, w->cy);
+	if (w->cx < 0)
+		w->cx = 0;
+	if (w->cx > len)
+		w->cx = len;
+	if (w->rowoff < 0)
+		w->rowoff = 0;
+}
+
+static Node *
+nodeleaf(Win *w)
+{
+	Node *n;
+
+	n = malloc(sizeof *n);
+	if (n == nil)
+		return nil;
+	memset(n, 0, sizeof *n);
+	n->split = 0;
+	n->w = w;
+	return n;
+}
+
+static Node *
+nodesplit(int split, Node *a, Node *b)
+{
+	Node *n;
+
+	n = malloc(sizeof *n);
+	if (n == nil)
+		return nil;
+	memset(n, 0, sizeof *n);
+	n->split = split;
+	n->a = a;
+	n->b = b;
+	return n;
+}
+
+static Win *
+firstwin(Node *n)
+{
+	if (n == nil)
+		return nil;
+	if (n->split == 0)
+		return n->w;
+	if (n->a)
+		return firstwin(n->a);
+	return firstwin(n->b);
+}
+
+static Node *
+removeleaf(Node *n, Win *target)
+{
+	Node *keep;
+
+	if (n == nil)
+		return nil;
+	if (n->split == 0) {
+		if (n->w == target) {
+			free(n->w);
+			free(n);
+			return nil;
+		}
+		return n;
+	}
+	n->a = removeleaf(n->a, target);
+	n->b = removeleaf(n->b, target);
+	if (n->a == nil && n->b == nil) {
+		free(n);
+		return nil;
+	}
+	if (n->a == nil) {
+		keep = n->b;
+		free(n);
+		return keep;
+	}
+	if (n->b == nil) {
+		keep = n->a;
+		free(n);
+		return keep;
+	}
+	return n;
+}
+
+static void
+nodefree(Node *n)
+{
+	if (n == nil)
+		return;
+	if (n->split == 0) {
+		free(n->w);
+		free(n);
+		return;
+	}
+	nodefree(n->a);
+	nodefree(n->b);
+	free(n);
+}
+
+static long
+nwins(Node *n)
+{
+	if (n == nil)
+		return 0;
+	if (n->split == 0)
+		return 1;
+	return nwins(n->a) + nwins(n->b);
+}
+
+static void
+collectwins(Node *n, Win **out, long *i)
+{
+	if (n == nil || out == nil || i == nil)
+		return;
+	if (n->split == 0) {
+		out[(*i)++] = n->w;
+		return;
+	}
+	collectwins(n->a, out, i);
+	collectwins(n->b, out, i);
+}
+
+static int
+findrect(Node *n, Win *w, Rect r, Rect *out)
+{
+	int sep;
+	int aW, bW;
+	int aH, bH;
+	Rect ra, rb;
+
+	if (n == nil)
+		return 0;
+	if (n->split == 0) {
+		if (n->w == w) {
+			if (out)
+				*out = r;
+			return 1;
+		}
+		return 0;
+	}
+	sep = 0;
+	if (n->split == 2)
+		sep = (r.w >= 3);
+	else if (n->split == 1)
+		sep = (r.h >= 3);
+
+	if (n->split == 2) {
+		aW = (r.w - sep) / 2;
+		bW = r.w - sep - aW;
+		if (aW < 1) aW = 1;
+		if (bW < 1) bW = 1;
+		ra = (Rect){ r.x, r.y, aW, r.h };
+		rb = (Rect){ r.x + aW + sep, r.y, bW, r.h };
+	} else {
+		aH = (r.h - sep) / 2;
+		bH = r.h - sep - aH;
+		if (aH < 1) aH = 1;
+		if (bH < 1) bH = 1;
+		ra = (Rect){ r.x, r.y, r.w, aH };
+		rb = (Rect){ r.x, r.y + aH + sep, r.w, bH };
+	}
+	if (findrect(n->a, w, ra, out))
+		return 1;
+	if (findrect(n->b, w, rb, out))
+		return 1;
+	return 0;
+}
+
+static Node *
+findleaf(Node *n, Win *w, Node **parent, int *isleft)
+{
+	Node *res;
+
+	if (n == nil)
+		return nil;
+	if (n->split == 0)
+		return n->w == w ? n : nil;
+	if (n->a) {
+		if (n->a->split == 0 && n->a->w == w) {
+			if (parent) *parent = n;
+			if (isleft) *isleft = 1;
+			return n->a;
+		}
+		res = findleaf(n->a, w, parent, isleft);
+		if (res)
+			return res;
+	}
+	if (n->b) {
+		if (n->b->split == 0 && n->b->w == w) {
+			if (parent) *parent = n;
+			if (isleft) *isleft = 0;
+			return n->b;
+		}
+		res = findleaf(n->b, w, parent, isleft);
+		if (res)
+			return res;
+	}
+	return nil;
+}
+
+static int
+splitcur(Eek *e, int vertical)
+{
+	Node *parent;
+	Node *leaf;
+	Node *a;
+	Node *b;
+	Node *split;
+	Win *nw;
+	int isleft;
+
+	if (e == nil || e->layout == nil || e->curwin == nil)
+		return -1;
+
+	winstore(e);
+	nw = winnewfrom(e);
+	if (nw == nil)
+		return -1;
+	winclamp(e, nw);
+
+	parent = nil;
+	isleft = 0;
+	leaf = findleaf(e->layout, e->curwin, &parent, &isleft);
+	if (leaf == nil) {
+		free(nw);
+		return -1;
+	}
+
+	a = nodeleaf(e->curwin);
+	b = nodeleaf(nw);
+	if (a == nil || b == nil) {
+		if (a) free(a);
+		if (b) nodefree(b);
+		return -1;
+	}
+	split = nodesplit(vertical ? 2 : 1, a, b);
+	if (split == nil) {
+		free(a);
+		nodefree(b);
+		return -1;
+	}
+
+	/* Replace the leaf node with the new split node. */
+	if (parent == nil) {
+		/* Root leaf. */
+		free(leaf);
+		e->layout = split;
+	} else {
+		if (isleft) {
+			free(parent->a);
+			parent->a = split;
+		} else {
+			free(parent->b);
+			parent->b = split;
+		}
+	}
+
+	/* Switch focus to the newly created window. */
+	e->curwin = nw;
+	winload(e, e->curwin);
+	return 0;
+}
+
+static int
+closecur(Eek *e)
+{
+	Win *w;
+
+	if (e == nil || e->layout == nil || e->curwin == nil)
+		return -1;
+	if (nwins(e->layout) <= 1)
+		return -1;
+
+	winstore(e);
+	e->layout = removeleaf(e->layout, e->curwin);
+	w = firstwin(e->layout);
+	if (w == nil)
+		return -1;
+	e->curwin = w;
+	winload(e, e->curwin);
+	return 0;
+}
+
 
 /*
  * setcursorshape updates the terminal cursor shape using DECSCUSR.
@@ -2023,11 +2419,8 @@ rxfromcx(Eek *e, long y, long cx)
  *  - void.
  */
 static void
-scroll(Eek *e)
+scroll(Eek *e, long textrows)
 {
-	long textrows;
-
-	textrows = e->t.row - 1;
 	if (textrows < 1)
 		textrows = 1;
 
@@ -2035,6 +2428,40 @@ scroll(Eek *e)
 		e->rowoff = e->cy;
 	if (e->cy >= e->rowoff + textrows)
 		e->rowoff = e->cy - textrows + 1;
+}
+
+static int
+nextwin(Eek *e)
+{
+	long n;
+	Win **arr;
+	long i;
+	long at;
+
+	if (e == nil || e->layout == nil || e->curwin == nil)
+		return -1;
+	n = nwins(e->layout);
+	if (n <= 1)
+		return 0;
+
+	winstore(e);
+	arr = malloc((size_t)n * sizeof arr[0]);
+	if (arr == nil)
+		return -1;
+	i = 0;
+	collectwins(e->layout, arr, &i);
+	at = 0;
+	for (at = 0; at < i; at++) {
+		if (arr[at] == e->curwin)
+			break;
+	}
+	if (at >= i)
+		at = 0;
+	at = (at + 1) % i;
+	e->curwin = arr[at];
+	winload(e, e->curwin);
+	free(arr);
+	return 0;
 }
 
 /*
@@ -2719,6 +3146,13 @@ cmdexec(Eek *e)
 	}
 
 	if (strcmp(p, "q") == 0) {
+		if (nwins(e->layout) > 1) {
+			if (closecur(e) < 0) {
+				setmsg(e, "Cannot close window");
+				return -1;
+			}
+			return 0;
+		}
 		if (e->dirty && !force) {
 			setmsg(e, "No write since last change (add !)");
 			return -1;
@@ -2758,7 +3192,29 @@ cmdexec(Eek *e)
 			return -1;
 		}
 		e->dirty = 0;
+		if (nwins(e->layout) > 1) {
+			if (closecur(e) < 0) {
+				setmsg(e, "Cannot close window");
+				return -1;
+			}
+			return 0;
+		}
 		e->quit = 1;
+		return 0;
+	}
+
+	if (strcmp(p, "split") == 0) {
+		if (splitcur(e, 0) < 0) {
+			setmsg(e, "Cannot split");
+			return -1;
+		}
+		return 0;
+	}
+	if (strcmp(p, "vsplit") == 0) {
+		if (splitcur(e, 1) < 0) {
+			setmsg(e, "Cannot vsplit");
+			return -1;
+		}
 		return 0;
 	}
 
@@ -2803,7 +3259,6 @@ draw(Eek *e)
 {
 	long y;
 	long filerow;
-	long textrows;
 	Line *l;
 	long i, rx;
 	long tx;
@@ -2812,264 +3267,386 @@ draw(Eek *e)
 	int gutter;
 	int numw;
 	char nbuf[64];
+	Rect root;
+	Rect cur;
+	long textrows;
+
+	if (e == nil)
+		return;
 
 	write(e->t.fdout, "\x1b[?25l", 6);
-	write(e->t.fdout, "\x1b[H", 3);
 	textrows = e->t.row - 1;
 	if (textrows < 1)
 		textrows = 1;
-	gutter = gutterwidth(e);
-	numw = gutter ? gutter - 1 : 0;
+	root = (Rect){ 0, 0, e->t.col, (int)textrows };
 
-	for (y = 0; y < textrows; y++) {
-		SynState syn;
-		int curinv;
-		int curhl;
-		int instr;
-		unsigned char delim;
-		int inlinecomment;
-		int preproc;
-		int include;
-		int inangle;
-		int blockendpending;
-		long idrem;
-		int idhl;
-		long numrem;
-		long tmp;
-		long j;
-		filerow = e->rowoff + y;
-		termmoveto(&e->t, (int)y, 0);
-		write(e->t.fdout, "\x1b[K", 3);
-		if (filerow >= e->b.nline) {
-			write(e->t.fdout, "~", 1);
-			continue;
-		}
-		if (gutter) {
-			long ln;
-			int nn;
+	/* Ensure the active window state is up to date before drawing. */
+	winstore(e);
 
-			ln = 0;
-			if (e->relativenumbers) {
-				if (filerow == e->cy)
-					ln = e->linenumbers ? filerow + 1 : 0;
-				else
-					ln = filerow > e->cy ? filerow - e->cy : e->cy - filerow;
-			} else {
-				ln = filerow + 1;
-			}
-			nn = snprintf(nbuf, sizeof nbuf, "%*ld ", numw, ln);
-			if (nn > 0)
-				write(e->t.fdout, nbuf, (size_t)nn);
-		}
-		l = bufgetline(&e->b, filerow);
-		if (l == nil || l->n == 0) {
-			continue;
-		}
+	/* Draw layout recursively. */
+	{
+		Node *stack[256];
+		Rect rstack[256];
+		int sp;
 
-		syninit(&syn);
-		synscanuntil(e, filerow, &syn);
-		curinv = 0;
-		curhl = Hlnone;
-		instr = 0;
-		delim = 0;
-		inlinecomment = 0;
-		preproc = 0;
-		include = 0;
-		inangle = 0;
-		blockendpending = 0;
-		idrem = 0;
-		idhl = Hlnone;
-		numrem = 0;
-		if (e->syntax == Sync) {
-			for (tmp = 0; tmp < l->n; tmp++) {
-				unsigned char c;
-				c = (unsigned char)l->s[tmp];
-				if (c == ' ' || c == '\t')
-					continue;
-				if (c == '#')
-					preproc = 1;
-				break;
-			}
-			if (preproc) {
-				long p;
-				p = 0;
-				while (p < l->n && (l->s[p] == ' ' || l->s[p] == '\t'))
-					p++;
-				if (p < l->n && l->s[p] == '#')
-					p++;
-				while (p < l->n && (l->s[p] == ' ' || l->s[p] == '\t'))
-					p++;
-				if (p + 7 <= l->n && memcmp(l->s + p, "include", 7) == 0) {
-					unsigned char c;
+		sp = 0;
+		stack[sp] = e->layout;
+		rstack[sp] = root;
+		sp++;
+		while (sp-- > 0) {
+			Node *nd;
+			Rect rr;
+			int sep;
+			int aW, bW;
+			int aH, bH;
+			Rect ra, rb;
 
-					c = (p + 7 < l->n) ? (unsigned char)l->s[p + 7] : 0;
-					if (c == 0 || c == ' ' || c == '\t')
-						include = 1;
-				}
-			}
-		}
+			nd = stack[sp];
+			rr = rstack[sp];
+			if (nd == nil)
+				continue;
+			if (nd->split == 0) {
+				winload(e, nd->w);
+				gutter = gutterwidth(e, rr.w);
+				numw = gutter ? gutter - 1 : 0;
+				for (y = 0; y < rr.h; y++) {
+					SynState syn;
+					int curinv;
+					int curhl;
+					int instr;
+					unsigned char delim;
+					int inlinecomment;
+					int preproc;
+					int include;
+					int inangle;
+					int blockendpending;
+					long idrem;
+					int idhl;
+					long numrem;
+					long tmp;
+					long j;
+					int collim;
 
-		rx = gutter;
-		tx = 0;
-		{
-		for (i = 0; i < l->n && rx < e->t.col; ) {
-			int wantinv;
-			int wanthl;
-			int basehl;
-			int openstring;
-			int openangle;
-			unsigned char c, n1;
-
-			wantinv = invsel(e, filerow, i);
-			basehl = preproc ? Hlpreproc : Hlnone;
-			wanthl = basehl;
-			openstring = 0;
-			openangle = 0;
-			c = (unsigned char)l->s[i];
-			n1 = (i + 1 < l->n) ? (unsigned char)l->s[i + 1] : 0;
-
-			if (e->syntax == Sync) {
-				if (inlinecomment || syn.inblock)
-					wanthl = Hlcomment;
-				else if (instr || inangle)
-					wanthl = Hlstring;
-				else if (numrem > 0)
-					wanthl = Hlnumber;
-				else if (idrem > 0) {
-					if (idhl != Hlnone)
-						wanthl = idhl;
-					else
-						wanthl = basehl;
-				}
-
-				if (!inlinecomment && !syn.inblock && !instr && !inangle) {
-					if (c == '/' && n1 == '/') {
-						inlinecomment = 1;
-						wanthl = Hlcomment;
-					}
-					if (!inlinecomment && c == '/' && n1 == '*') {
-						syn.inblock = 1;
-						blockendpending = 0;
-						wanthl = Hlcomment;
-					}
-					if (!inlinecomment && !syn.inblock && (c == '"' || c == '\'')) {
-						openstring = 1;
-						wanthl = Hlstring;
-					}
-					if (include && c == '<') {
-						openangle = 1;
-						wanthl = Hlstring;
-					}
-					if (!openstring && !openangle && !inlinecomment && !syn.inblock) {
-						if ((c >= '0' && c <= '9')) {
-							for (j = i; j < l->n; j++) {
-								unsigned char d;
-
-								d = (unsigned char)l->s[j];
-								if (!((d >= '0' && d <= '9') || d == '.' || d == 'x' || d == 'X' ||
-									(d >= 'a' && d <= 'f') || (d >= 'A' && d <= 'F')))
-									break;
-							}
-							numrem = j - i;
-							wanthl = Hlnumber;
+					filerow = e->rowoff + y;
+					termmoveto(&e->t, rr.y + (int)y, rr.x);
+					collim = rr.w;
+					rx = 0;
+					if (filerow >= e->b.nline) {
+						if (collim > 0) {
+							write(e->t.fdout, "~", 1);
+							rx = 1;
 						}
-						if ((c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) &&
-							(i == 0 || !isword((unsigned char)l->s[i - 1]))) {
-							for (j = i; j < l->n; j++) {
-								unsigned char d;
+						while (rx++ < collim)
+							write(e->t.fdout, " ", 1);
+						continue;
+					}
+					if (gutter && collim > 0) {
+						long ln;
+						int nn;
 
-								d = (unsigned char)l->s[j];
-								if (!(d == '_' || (d >= 'A' && d <= 'Z') || (d >= 'a' && d <= 'z') || (d >= '0' && d <= '9')))
-									break;
-							}
-							idhl = synwordkind_lang(e->syntax, l->s + i, j - i);
-							idrem = j - i;
-							if (idhl != Hlnone)
-								wanthl = idhl;
+						ln = 0;
+						if (e->relativenumbers) {
+							if (filerow == e->cy)
+								ln = e->linenumbers ? filerow + 1 : 0;
 							else
-								wanthl = basehl;
+								ln = filerow > e->cy ? filerow - e->cy : e->cy - filerow;
+						} else {
+							ln = filerow + 1;
+						}
+						nn = snprintf(nbuf, sizeof nbuf, "%*ld ", numw, ln);
+						if (nn > 0) {
+							if (nn > collim)
+								nn = collim;
+							write(e->t.fdout, nbuf, (size_t)nn);
+							rx += nn;
 						}
 					}
+					l = bufgetline(&e->b, filerow);
+					if (l == nil || l->n == 0) {
+						while (rx++ < collim)
+							write(e->t.fdout, " ", 1);
+						continue;
+					}
+
+					syninit(&syn);
+					synscanuntil(e, filerow, &syn);
+					curinv = 0;
+					curhl = Hlnone;
+					instr = 0;
+					delim = 0;
+					inlinecomment = 0;
+					preproc = 0;
+					include = 0;
+					inangle = 0;
+					blockendpending = 0;
+					idrem = 0;
+					idhl = Hlnone;
+					numrem = 0;
+					if (e->syntax == Sync) {
+						for (tmp = 0; tmp < l->n; tmp++) {
+							unsigned char c;
+							c = (unsigned char)l->s[tmp];
+							if (c == ' ' || c == '\t')
+								continue;
+							if (c == '#')
+								preproc = 1;
+							break;
+						}
+						if (preproc) {
+							long p;
+							p = 0;
+							while (p < l->n && (l->s[p] == ' ' || l->s[p] == '\t'))
+								p++;
+							if (p < l->n && l->s[p] == '#')
+								p++;
+							while (p < l->n && (l->s[p] == ' ' || l->s[p] == '\t'))
+								p++;
+							if (p + 7 <= l->n && memcmp(l->s + p, "include", 7) == 0) {
+								unsigned char c;
+
+								c = (p + 7 < l->n) ? (unsigned char)l->s[p + 7] : 0;
+								if (c == 0 || c == ' ' || c == '\t')
+									include = 1;
+							}
+						}
+					}
+
+					rx = gutter;
+					tx = 0;
+					for (i = 0; i < l->n && rx < collim; ) {
+						int wantinv;
+						int wanthl;
+						int basehl;
+						int openstring;
+						int openangle;
+						unsigned char c, n1;
+
+						wantinv = invsel(e, filerow, i);
+						basehl = preproc ? Hlpreproc : Hlnone;
+						wanthl = basehl;
+						openstring = 0;
+						openangle = 0;
+						c = (unsigned char)l->s[i];
+						n1 = (i + 1 < l->n) ? (unsigned char)l->s[i + 1] : 0;
+
+						if (e->syntax == Sync) {
+							if (inlinecomment || syn.inblock)
+								wanthl = Hlcomment;
+							else if (instr || inangle)
+								wanthl = Hlstring;
+							else if (numrem > 0)
+								wanthl = Hlnumber;
+							else if (idrem > 0) {
+								if (idhl != Hlnone)
+									wanthl = idhl;
+								else
+									wanthl = basehl;
+							}
+
+							if (!inlinecomment && !syn.inblock && !instr && !inangle) {
+								if (c == '/' && n1 == '/') {
+									inlinecomment = 1;
+									wanthl = Hlcomment;
+								}
+								if (!inlinecomment && c == '/' && n1 == '*') {
+									syn.inblock = 1;
+									blockendpending = 0;
+									wanthl = Hlcomment;
+								}
+								if (!inlinecomment && !syn.inblock && (c == '"' || c == '\'')) {
+									openstring = 1;
+									wanthl = Hlstring;
+								}
+								if (include && c == '<') {
+									openangle = 1;
+									wanthl = Hlstring;
+								}
+								if (!openstring && !openangle && !inlinecomment && !syn.inblock) {
+									if ((c >= '0' && c <= '9')) {
+										for (j = i; j < l->n; j++) {
+											unsigned char d;
+
+											d = (unsigned char)l->s[j];
+											if (!((d >= '0' && d <= '9') || d == '.' || d == 'x' || d == 'X' ||
+												(d >= 'a' && d <= 'f') || (d >= 'A' && d <= 'F')))
+												break;
+										}
+										numrem = j - i;
+										wanthl = Hlnumber;
+									}
+									if ((c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) &&
+										(i == 0 || !isword((unsigned char)l->s[i - 1]))) {
+										for (j = i; j < l->n; j++) {
+											unsigned char d;
+
+											d = (unsigned char)l->s[j];
+											if (!(d == '_' || (d >= 'A' && d <= 'Z') || (d >= 'a' && d <= 'z') || (d >= '0' && d <= '9')))
+												break;
+										}
+										idhl = synwordkind_lang(e->syntax, l->s + i, j - i);
+										idrem = j - i;
+										if (idhl != Hlnone)
+											wanthl = idhl;
+										else
+											wanthl = basehl;
+									}
+								}
+							}
+						}
+
+						if (wantinv != curinv || wanthl != curhl) {
+							drawattrs(e, wantinv, wanthl);
+							curinv = wantinv;
+							curhl = wanthl;
+						}
+
+						if (l->s[i] == '\t') {
+							long nsp;
+
+							nsp = TABSTOP - (tx % TABSTOP);
+							while (nsp-- > 0 && rx < collim) {
+								write(e->t.fdout, " ", 1);
+								tx++;
+								rx++;
+							}
+							i++;
+							if (idrem > 0)
+								idrem--;
+							if (numrem > 0)
+								numrem--;
+							continue;
+						}
+						ni = nextutf8(e, filerow, i);
+						n = ni - i;
+						if (n <= 0)
+							n = 1;
+						if (i + n > l->n)
+							n = l->n - i;
+						if (rx < collim)
+							write(e->t.fdout, &l->s[i], (size_t)n);
+						if (e->syntax == Sync) {
+							if (openstring) {
+								instr = 1;
+								delim = c;
+							}
+							if (openangle) {
+								inangle = 1;
+							}
+							if (instr && !openstring) {
+								if (c == '\\') {
+									if (i + 1 < l->n)
+										i++;
+								} else if (c == delim) {
+									instr = 0;
+									delim = 0;
+								}
+							}
+							if (inangle && !openangle) {
+								if (c == '>')
+									inangle = 0;
+							}
+							if (syn.inblock) {
+								if (blockendpending && c == '/') {
+									syn.inblock = 0;
+									blockendpending = 0;
+								} else if (c == '*' && n1 == '/') {
+									blockendpending = 1;
+								}
+							}
+							if (idrem > 0)
+								idrem--;
+							if (numrem > 0)
+								numrem--;
+						}
+						tx++;
+						rx++;
+						i += n;
+					}
+					if (curinv || curhl != Hlnone)
+						write(e->t.fdout, "\x1b[m", 3);
+					while (rx++ < collim)
+						write(e->t.fdout, " ", 1);
 				}
-			}
-
-			if (wantinv != curinv || wanthl != curhl) {
-				drawattrs(e, wantinv, wanthl);
-				curinv = wantinv;
-				curhl = wanthl;
-			}
-
-			if (l->s[i] == '\t') {
-				long nsp;
-
-				nsp = TABSTOP - (tx % TABSTOP);
-				while (nsp-- > 0 && rx < e->t.col) {
-					write(e->t.fdout, " ", 1);
-					tx++;
-					rx++;
-				}
-				i++;
-				if (idrem > 0)
-					idrem--;
-				if (numrem > 0)
-					numrem--;
 				continue;
 			}
-			ni = nextutf8(e, filerow, i);
-			n = ni - i;
-			if (n <= 0)
-				n = 1;
-			if (i + n > l->n)
-				n = l->n - i;
-			write(e->t.fdout, &l->s[i], (size_t)n);
-			if (e->syntax == Sync) {
-				if (openstring) {
-					instr = 1;
-					delim = c;
-				}
-				if (openangle) {
-					inangle = 1;
-				}
-				if (instr && !openstring) {
-					if (c == '\\') {
-						if (i + 1 < l->n)
-							i++;
-					} else if (c == delim) {
-						instr = 0;
-						delim = 0;
+
+			/* Internal node: compute child rects and push children. */
+			sep = 0;
+			if (nd->split == 2)
+				sep = (rr.w >= 3);
+			else if (nd->split == 1)
+				sep = (rr.h >= 3);
+			if (nd->split == 2) {
+				aW = (rr.w - sep) / 2;
+				bW = rr.w - sep - aW;
+				if (aW < 1) aW = 1;
+				if (bW < 1) bW = 1;
+				ra = (Rect){ rr.x, rr.y, aW, rr.h };
+				rb = (Rect){ rr.x + aW + sep, rr.y, bW, rr.h };
+				if (sep) {
+					int yy;
+					for (yy = 0; yy < rr.h; yy++) {
+						termmoveto(&e->t, rr.y + yy, rr.x + aW);
+						write(e->t.fdout, "|", 1);
 					}
 				}
-				if (inangle && !openangle) {
-					if (c == '>')
-						inangle = 0;
+			} else {
+				aH = (rr.h - sep) / 2;
+				bH = rr.h - sep - aH;
+				if (aH < 1) aH = 1;
+				if (bH < 1) bH = 1;
+				ra = (Rect){ rr.x, rr.y, rr.w, aH };
+				rb = (Rect){ rr.x, rr.y + aH + sep, rr.w, bH };
+				if (sep) {
+					int xx;
+					termmoveto(&e->t, rr.y + aH, rr.x);
+					for (xx = 0; xx < rr.w; xx++)
+						write(e->t.fdout, "-", 1);
 				}
-				if (syn.inblock) {
-					if (blockendpending && c == '/') {
-						syn.inblock = 0;
-						blockendpending = 0;
-					} else if (c == '*' && n1 == '/') {
-						blockendpending = 1;
-					}
-				}
-				if (idrem > 0)
-					idrem--;
-				if (numrem > 0)
-					numrem--;
 			}
-			tx++;
-			rx++;
-			i += n;
-		}
-		if (curinv || curhl != Hlnone)
-			write(e->t.fdout, "\x1b[m", 3);
+
+			/* Draw children (push b then a so a is processed first). */
+			if (nd->b && sp + 1 < (int)(sizeof stack / sizeof stack[0])) {
+				stack[sp] = nd->b;
+				rstack[sp] = rb;
+				sp++;
+			}
+			if (nd->a && sp + 1 < (int)(sizeof stack / sizeof stack[0])) {
+				stack[sp] = nd->a;
+				rstack[sp] = ra;
+				sp++;
+			}
 		}
 	}
+
+	/* Restore active view state for status line and cursor placement. */
+	winload(e, e->curwin);
 	termmoveto(&e->t, (int)textrows, 0);
 	write(e->t.fdout, "\x1b[K", 3);
 	drawstatus(e);
 
-	rx = rxfromcx(e, e->cy, e->cx) + gutter;
-	termmoveto(&e->t, (int)(e->cy - e->rowoff), (int)rx);
+	cur = root;
+	if (findrect(e->layout, e->curwin, root, &cur)) {
+		long cyrel;
+		long cxcol;
+		int cxabs;
+		int cyabs;
+
+		gutter = gutterwidth(e, cur.w);
+		cyrel = e->cy - e->rowoff;
+		if (cyrel < 0)
+			cyrel = 0;
+		if (cyrel >= cur.h)
+			cyrel = cur.h - 1;
+		cxcol = rxfromcx(e, e->cy, e->cx) + gutter;
+		if (cxcol < 0)
+			cxcol = 0;
+		if (cxcol >= cur.w)
+			cxcol = cur.w > 0 ? cur.w - 1 : 0;
+		cxabs = cur.x + (int)cxcol;
+		cyabs = cur.y + (int)cyrel;
+		termmoveto(&e->t, cyabs, cxabs);
+	}
 	write(e->t.fdout, "\x1b[?25h", 6);
 }
 
@@ -3707,6 +4284,11 @@ main(int argc, char **argv)
 	}
 
 	terminit(&e.t);
+	/* Initialize the window layout with a single window/view. */
+	e.layout = nodeleaf(winnewfrom(&e));
+	if (e.layout == nil || e.layout->w == nil)
+		die("Out of memory");
+	e.curwin = e.layout->w;
 	setmode(&e, Modenormal);
 	cmdclear(&e);
 	draw(&e);
@@ -3714,9 +4296,55 @@ main(int argc, char **argv)
 	for (;;) {
 		if (termresized()) {
 			termgetwinsz(&e.t);
+			/* Clamp all window cursors after a resize. */
+			{
+				long n;
+				Win **arr;
+				long i;
+				n = nwins(e.layout);
+				arr = n > 0 ? malloc((size_t)n * sizeof arr[0]) : nil;
+				if (arr != nil) {
+					i = 0;
+					collectwins(e.layout, arr, &i);
+					while (i-- > 0)
+						winclamp(&e, arr[i]);
+					free(arr);
+				}
+			}
 			normalfixcursor(&e);
 		}
-		scroll(&e);
+		/* Scroll the active window based on its viewport height. */
+		{
+			Rect root;
+			Rect cur;
+			long textrows;
+
+			textrows = e.t.row - 1;
+			if (textrows < 1)
+				textrows = 1;
+			root = (Rect){ 0, 0, e.t.col, (int)textrows };
+			cur = root;
+			if (!findrect(e.layout, e.curwin, root, &cur))
+				cur = root;
+			scroll(&e, cur.h);
+		}
+		winstore(&e);
+		/* Keep non-active window cursors in bounds after edits/undo. */
+		{
+			long n;
+			Win **arr;
+			long i;
+			n = nwins(e.layout);
+			arr = n > 0 ? malloc((size_t)n * sizeof arr[0]) : nil;
+			if (arr != nil) {
+				i = 0;
+				collectwins(e.layout, arr, &i);
+				while (i-- > 0)
+					winclamp(&e, arr[i]);
+				free(arr);
+			}
+		}
+		winload(&e, e.curwin);
 		draw(&e);
 		if (e.quit)
 			break;
@@ -4025,6 +4653,15 @@ main(int argc, char **argv)
 		else if (k.kind == Keyright)
 			mover(&e);
 		else if (k.kind == Keyrune) {
+			if (e.lastnormalrune == 0x17 && k.value == 'w') {
+				(void)nextwin(&e);
+				e.lastnormalrune = 0;
+				e.lastmotioncount = 0;
+				e.seqcount = 0;
+				e.count = 0;
+				e.opcount = 0;
+				goto afterkey;
+			}
 			if (e.mode == Modevisual) {
 				if (e.vtipending) {
 					e.vtipending = 0;
@@ -4320,11 +4957,16 @@ main(int argc, char **argv)
 				e.seqcount = e.count;
 				e.count = 0;
 				break;
+			case 0x17: /* Ctrl-W */
+				e.lastnormalrune = 0x17;
+				e.count = 0;
+				e.opcount = 0;
+				break;
 			default:
 				break;
 			}
 			afterkey:
-			if (k.value != 'l' && k.value != 'r' && k.value != 'g')
+			if (k.value != 'l' && k.value != 'r' && k.value != 'g' && k.value != 0x17)
 				e.lastnormalrune = 0;
 			if (k.value != 'l')
 				e.lastmotioncount = 0;
@@ -4338,6 +4980,7 @@ main(int argc, char **argv)
 done:
 	yclear(&e);
 	undofree(&e);
+	nodefree(e.layout);
 	free(e.lastsearch);
 	setcursorshape(&e, Cursornormal);
 	termclear(&e.t);

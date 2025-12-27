@@ -65,6 +65,13 @@ Configuration lives in `config.h`.
 
 eek implements a small subset of vi/ex style command-line commands.
 
+### Windows (`:split`, `:vsplit`)
+
+- `:split` creates a horizontal split.
+- `:vsplit` creates a vertical split.
+- `Ctrl-w` then `w` cycles the active window.
+- When multiple windows exist, `:q` closes the active window.
+
 ### Substitute (`:s`)
 
 Syntax:

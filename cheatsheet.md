@@ -160,6 +160,13 @@ Notes:
 
 ## Ex commands (`:`)
 
+Windows:
+
+- Horizontal split: `:split`
+- Vertical split: `:vsplit`
+- Cycle active window: `Ctrl-w` then `w`
+- `:q` closes the active window when split
+
 Write / quit:
 
 - Write: `:w`
