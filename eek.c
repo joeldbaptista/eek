@@ -89,6 +89,10 @@ struct Eek {
 	char cmd[256];       /* Command-line buffer (for ':' and '/' prompts). */
 	long cmdn;           /* Number of bytes used in cmd. */
 	char cmdprefix;      /* Prompt prefix character (':' or '/'). */
+	int cmdkeepvisual;   /* Non-zero to keep VISUAL selection highlighted while in Modecmd. */
+	int cmdrange;        /* Non-zero if command should default to a line range. */
+	long cmdy0;          /* Range start line index (0-based, inclusive). */
+	long cmdy1;          /* Range end line index (0-based, inclusive). */
 	char *lastsearch;    /* Last search pattern (heap-owned) or nil. */
 	char msg[256];       /* Status message shown in the status line. */
 	long quit;           /* Non-zero requests program exit. */
@@ -123,6 +127,7 @@ static void drawattrs(Eek *e, int inv, int hl);
 
 static int findfwd(Eek *e, long r, long n);
 static int subexec(Eek *e, char *line);
+static void vsellines(Eek *e, long *y0, long *y1);
 
 static int undopush(Eek *e);
 static void undofree(Eek *e);
@@ -248,6 +253,51 @@ findlinecontains(Eek *e, const char *s, long n)
 			return y;
 	}
 	return -1;
+}
+
+/*
+ * vsellines computes the selected line range for the current VISUAL selection.
+ *
+ * Parameters:
+ *  e: editor state.
+ *  y0: output start line (inclusive).
+ *  y1: output end line (inclusive).
+ *
+ * Returns:
+ *  None.
+ */
+static void
+vsellines(Eek *e, long *y0, long *y1)
+{
+	long a, b;
+
+	if (y0)
+		*y0 = 0;
+	if (y1)
+		*y1 = 0;
+	if (e == nil || e->b.nline <= 0)
+		return;
+
+	a = e->vay;
+	b = e->cy;
+	if (a > b) {
+		long t;
+		t = a;
+		a = b;
+		b = t;
+	}
+	if (a < 0)
+		a = 0;
+	if (b < 0)
+		b = 0;
+	if (a >= e->b.nline)
+		a = e->b.nline - 1;
+	if (b >= e->b.nline)
+		b = e->b.nline - 1;
+	if (y0)
+		*y0 = a;
+	if (y1)
+		*y1 = b;
 }
 
 /*
@@ -587,6 +637,15 @@ subexec(Eek *e, char *line)
 	if (*p != 's')
 		return 0;
 	p++;
+
+	/*
+	 * If no explicit address/range was provided, allow VISUAL ':' to supply a
+	 * default line range (like Vim's :'<,'>).
+	 */
+	if (!havea0 && !havea1 && e->cmdrange) {
+		a0 = e->cmdy0;
+		a1 = e->cmdy1;
+	}
 	if (*p != '/')
 		return 0;
 	p++;
@@ -710,6 +769,13 @@ vselbounds(Eek *e, long *sy, long *sx, long *ey, long *ex)
 	ax = e->vax;
 	by = e->cy;
 	bx = e->cx;
+	if (e->mode != Modevisual && !(e->mode == Modecmd && e->cmdkeepvisual)) {
+		*sy = 0;
+		*sx = 0;
+		*ey = 0;
+		*ex = 0;
+		return;
+	}
 	if (poslt(by, bx, ay, ax)) {
 		ty = ay;
 		tx = ax;
@@ -740,7 +806,7 @@ invsel(Eek *e, long y, long x)
 {
 	long sy, sx, ey, ex;
 
-	if (e->mode != Modevisual)
+	if (e->mode != Modevisual && !(e->mode == Modecmd && e->cmdkeepvisual))
 		return 0;
 	vselbounds(e, &sy, &sx, &ey, &ex);
 	if (y < sy || y > ey)
@@ -3663,7 +3729,12 @@ main(int argc, char **argv)
 
 		if (e.mode == Modecmd) {
 			if (k.kind == Keyesc) {
-				setmode(&e, Modenormal);
+				if (e.cmdkeepvisual)
+					setmode(&e, Modevisual);
+				else
+					setmode(&e, Modenormal);
+				e.cmdrange = 0;
+				e.cmdkeepvisual = 0;
 				cmdclear(&e);
 				e.cmdprefix = ':';
 				continue;
@@ -3673,6 +3744,8 @@ main(int argc, char **argv)
 					(void)searchexec(&e);
 				else
 					(void)cmdexec(&e);
+				e.cmdrange = 0;
+				e.cmdkeepvisual = 0;
 				setmode(&e, Modenormal);
 				cmdclear(&e);
 				e.cmdprefix = ':';
@@ -3707,8 +3780,9 @@ main(int argc, char **argv)
 				e.dpending = 0;
 				e.cpending = 0;
 				e.ypending = 0;
-				e.fpending = 0;
+				e.cmdrange = 0;
 				e.fcount = 0;
+				e.fpending = 0;
 				e.tipending = 0;
 				e.vtipending = 0;
 				normalfixcursor(&e);
@@ -4075,9 +4149,21 @@ main(int argc, char **argv)
 				e.opcount = 0;
 				break;
 			case ':':
-				setmode(&e, Modecmd);
-				cmdclear(&e);
-				e.cmdprefix = ':';
+				{
+					int wasvisual;
+
+					wasvisual = (e.mode == Modevisual);
+					setmode(&e, Modecmd);
+					cmdclear(&e);
+					e.cmdprefix = ':';
+					e.cmdkeepvisual = wasvisual;
+					if (wasvisual) {
+						vsellines(&e, &e.cmdy0, &e.cmdy1);
+						e.cmdrange = 1;
+					} else {
+						e.cmdrange = 0;
+					}
+				}
 				e.lastnormalrune = 0;
 				e.lastmotioncount = 0;
 				e.seqcount = 0;
