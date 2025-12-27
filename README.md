@@ -182,6 +182,54 @@ This tradeoff is deliberate: for a small editor, full snapshots are much simpler
 
 There is currently no redo stack. Only single-step undo via `u` is implemented.
 
+## Future developments
+
+eek is intentionally minimal, but there are several improvements that fit the “small vi-clone” goal and can be implemented without turning the project into a full Vim replacement.
+
+### Editing features
+
+- Redo (`Ctrl-r`)
+	- With snapshot-based undo, redo is typically implemented as a second stack.
+	- New edits should clear the redo stack (like most editors).
+
+- Repeat last change (`.`)
+	- Record the last *editing* action (not just motion) and replay it.
+	- This is one of the highest leverage vi features once operators/motions exist.
+
+- More linewise operators
+	- `D` as `d$` (delete to end-of-line) to mirror the existing `C`.
+	- `S` as `cc` (change entire line) for quick rewriting.
+
+- Replace/substitute primitives
+	- `r{char}`: replace the character under the cursor (count-aware).
+	- `s`: delete one character and enter INSERT (similar to `cl`).
+
+### Motions and text objects
+
+- Character find motions: `f{c}`, `F{c}`, `t{c}`, `T{c}` plus repeats `;` and `,`.
+- Better line navigation: `^` (first non-blank), `H`/`M`/`L` (top/middle/bottom of the viewport).
+- Paragraph movement: `{` and `}` (blank-line separated).
+- Word text objects: `iw` / `aw` so `diw`, `ciw`, `yiw` become available.
+
+### Search
+
+- Forward search (`/pattern`) with `n`/`N` to jump between matches.
+- Optional match highlighting (keeping it simple and fast).
+
+### Internal improvements
+
+- Undo performance
+	- Current undo is full-buffer snapshots, which is simple but $O(\text{file size})$ per snapshot.
+	- A future improvement is a diff/inverse-operation log to reduce memory and time for large files.
+
+- Robustness and correctness
+	- More edge-case hardening around UTF-8 boundaries and multi-line operations.
+	- More consistent error propagation on allocation failures.
+
+- Test harness
+	- Add a small non-interactive test layer around `buf.c` primitives (line insert/delete, load/save, copies).
+	- This helps keep refactors safe without requiring full terminal-driven integration tests.
+
 ## Code style
 
 The code style follows Plan 9 / suckless conventions: keep formatting consistent, keep naming predictable, avoid cleverness, and prefer readability over compactness. In practice this means things like:
