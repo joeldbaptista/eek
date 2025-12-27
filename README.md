@@ -87,6 +87,14 @@ eek implements a small subset of vi/ex style command-line commands.
 - If `filename` does not exist, `:e filename` opens an empty buffer and sets the name.
 - Use `:e! filename` to discard unsaved changes in the current tab.
 
+### Paging (`(`, `)`)
+
+In NORMAL mode:
+
+- `)` pages down by one window height.
+- `(` pages up by one window height.
+- Counts work: `n)` / `n(` (example: `3)` pages down 3 pages).
+
 ### Substitute (`:s`)
 
 Syntax:

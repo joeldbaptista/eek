@@ -62,6 +62,12 @@ File navigation:
 - Go to first line: `gg`
 - Go to line *n* with `gg`: `ngg` (example: `12gg`)
 
+Page navigation:
+
+- Page down: `)`
+- Page up: `(`
+- With count: `n)` / `n(` (example: `3)`)
+
 Find on current line:
 
 - Find next character on the line: `f{char}` (example: `f.` / `f,`)
