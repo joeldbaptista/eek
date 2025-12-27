@@ -1,0 +1,11 @@
+# build
+*.o
+eek
+docs/
+
+# local config
+config.h
+
+# editor/OS
+.*.swp
+.DS_Store
