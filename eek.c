@@ -421,6 +421,7 @@ dotstartkey(long r)
 {
 	switch (r) {
 	case 'v':
+	case 'V':
 	case 'd':
 	case 'c':
 	case 's':
@@ -6467,6 +6468,34 @@ vistoggle(Eek *e, Args *a)
 }
 
 static int
+visline(Eek *e, Args *a)
+{
+	(void)a;
+	if (e == nil)
+		return 0;
+
+	/* Clear any operator-pending state and select the entire current line. */
+	e->dpending = 0;
+	e->cpending = 0;
+	e->ypending = 0;
+	e->fpending = 0;
+	e->fcount = 0;
+	e->rpending = 0;
+	e->rcount = 0;
+	e->tipending = 0;
+	e->vtipending = 0;
+
+	e->vay = e->cy;
+	e->vax = 0;
+	e->cx = linelen(e, e->cy);
+	setmode(e, Modevisual);
+
+	e->count = 0;
+	e->opcount = 0;
+	return 0;
+}
+
+static int
 exline(Eek *e, Args *a)
 {
 	int wasvisual;
@@ -6985,6 +7014,7 @@ static const Move nvkeys[] = {
 
 	/* mode */
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'v', "v", vistoggle },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'V', "V", visline },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, ':', ":", exline },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, '/', "/", searchline },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'i', "i", insbefore },
