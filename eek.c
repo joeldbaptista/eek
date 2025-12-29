@@ -2930,6 +2930,8 @@ nextutf8(Eek *e, long y, long at)
 	return at + n;
 }
 
+static int isws(long c);
+
 /*
  * isword reports whether c is considered a "word" character for word motions.
  *
@@ -2946,11 +2948,17 @@ isword(long c)
 		return 0;
 	if (c > 0x7f)
 		return 1;
-	if (c == ' ' || c == '\t' || c == '\n' || c == '\r')
+	if (isws(c))
 		return 0;
-	if (c == '.' || c == ',' || c == ':' || c == ';' || c == '(' || c == ')' || c == '[' || c == ']' || c == '{' || c == '}' || c == '<' || c == '>' || c == '"' || c == '\'' || c == '!')
-		return 0;
-	return 1;
+	if (c == '_')
+		return 1;
+	if (c >= '0' && c <= '9')
+		return 1;
+	if (c >= 'A' && c <= 'Z')
+		return 1;
+	if (c >= 'a' && c <= 'z')
+		return 1;
+	return 0;
 }
 
 /*
@@ -5990,12 +5998,53 @@ insesc(Eek *e, Args *a)
 	return 0;
 }
 
-static int insleft(Eek *e, Args *a) { (void)a; movel(e); return 0; }
-static int insright(Eek *e, Args *a) { (void)a; mover(e); return 0; }
-static int insup(Eek *e, Args *a) { (void)a; moveu(e); return 0; }
-static int insdown(Eek *e, Args *a) { (void)a; moved(e); return 0; }
-static int insbs(Eek *e, Args *a) { (void)a; (void)delback(e); return 0; }
-static int insenter(Eek *e, Args *a) { (void)a; (void)insertnl(e); return 0; }
+static int
+insleft(Eek *e, Args *a)
+{
+	(void)a;
+	movel(e);
+	return 0;
+}
+
+static int
+insright(Eek *e, Args *a)
+{
+	(void)a;
+	mover(e);
+	return 0;
+}
+
+static int
+insup(Eek *e, Args *a)
+{
+	(void)a;
+	moveu(e);
+	return 0;
+}
+
+static int
+insdown(Eek *e, Args *a)
+{
+	(void)a;
+	moved(e);
+	return 0;
+}
+
+static int
+insbs(Eek *e, Args *a)
+{
+	(void)a;
+	(void)delback(e);
+	return 0;
+}
+
+static int
+insenter(Eek *e, Args *a)
+{
+	(void)a;
+	(void)insertnl(e);
+	return 0;
+}
 
 static int
 insrune(Eek *e, Args *a)
@@ -6535,9 +6584,9 @@ static const Move nvkeys[] = {
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'O', "O", openabove },
 
 	/* operators */
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'd', "d{n}f", opdel },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'c', "c{n}f", opchg },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'y', "y{n}f", opyank },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'd', "d{n}f", opdel },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'c', "c{n}f", opchg },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'y', "y{n}f", opyank },
 
 	/* edits */
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'x', "{n}x", delchar },
