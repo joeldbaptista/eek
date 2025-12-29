@@ -6050,8 +6050,26 @@ inskey(Eek *e, const Key *k)
 }
 
 /* NORMAL/VISUAL move implementations (table-driven). */
-static int quit(Eek *e, Args *a) { (void)a; e->quit = 1; return 0; }
-static int undo(Eek *e, Args *a) { (void)a; undopop(e); e->count = 0; e->opcount = 0; e->lastnormalrune = 0; e->lastmotioncount = 0; e->seqcount = 0; return 0; }
+static int
+quit(Eek *e, Args *a)
+{
+	(void)a;
+	e->quit = 1;
+	return 0;
+}
+
+static int
+undo(Eek *e, Args *a)
+{
+	(void)a;
+	undopop(e);
+	e->count = 0;
+	e->opcount = 0;
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	return 0;
+}
 
 static int
 searchnext(Eek *e, Args *a)
@@ -6159,9 +6177,44 @@ searchline(Eek *e, Args *a)
 	return 0;
 }
 
-static int opdel(Eek *e, Args *a) { (void)a; e->opcount = countval(e->count); e->count = 0; e->dpending = 1; e->lastnormalrune = 0; e->lastmotioncount = 0; e->seqcount = 0; return 0; }
-static int opchg(Eek *e, Args *a) { (void)a; e->opcount = countval(e->count); e->count = 0; e->cpending = 1; e->lastnormalrune = 0; e->lastmotioncount = 0; e->seqcount = 0; return 0; }
-static int opyank(Eek *e, Args *a) { (void)a; e->opcount = countval(e->count); e->count = 0; e->ypending = 1; e->lastnormalrune = 0; e->lastmotioncount = 0; e->seqcount = 0; return 0; }
+static int
+opdel(Eek *e, Args *a)
+{
+	(void)a;
+	e->opcount = countval(e->count);
+	e->count = 0;
+	e->dpending = 1;
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	return 0;
+}
+
+static int
+opchg(Eek *e, Args *a)
+{
+	(void)a;
+	e->opcount = countval(e->count);
+	e->count = 0;
+	e->cpending = 1;
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	return 0;
+}
+
+static int
+opyank(Eek *e, Args *a)
+{
+	(void)a;
+	e->opcount = countval(e->count);
+	e->count = 0;
+	e->ypending = 1;
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	return 0;
+}
 
 static int
 findbegin(Eek *e, Args *a)
@@ -6277,8 +6330,23 @@ insend(Eek *e, Args *a)
 	return 0;
 }
 
-static int openbelow(Eek *e, Args *a) { (void)a; (void)openlinebelow(e); e->lastnormalrune = 0; return 0; }
-static int openabove(Eek *e, Args *a) { (void)a; (void)openlineabove(e); e->lastnormalrune = 0; return 0; }
+static int
+openbelow(Eek *e, Args *a)
+{
+	(void)a;
+	(void)openlinebelow(e);
+	e->lastnormalrune = 0;
+	return 0;
+}
+
+static int
+openabove(Eek *e, Args *a)
+{
+	(void)a;
+	(void)openlineabove(e);
+	e->lastnormalrune = 0;
+	return 0;
+}
 
 static int
 curleft(Eek *e, Args *a)
@@ -6339,8 +6407,21 @@ page(Eek *e, Args *a)
 	return 0;
 }
 
-static int bol(Eek *e, Args *a) { (void)a; e->cx = 0; return 0; }
-static int eol(Eek *e, Args *a) { (void)a; e->cx = linelen(e, e->cy); return 0; }
+static int
+bol(Eek *e, Args *a)
+{
+	(void)a;
+	e->cx = 0;
+	return 0;
+}
+
+static int
+eol(Eek *e, Args *a)
+{
+	(void)a;
+	e->cx = linelen(e, e->cy);
+	return 0;
+}
 
 static int
 wordnext(Eek *e, Args *a)
@@ -6363,20 +6444,20 @@ wordprev(Eek *e, Args *a)
 static int
 insbefore(Eek *e, Args *a)
 {
-    (void)a;
-    setmode(e, Modeinsert);
-    e->count = 0;
-    e->opcount = 0;
-    return 0;
+	(void)a;
+	setmode(e, Modeinsert);
+	e->count = 0;
+	e->opcount = 0;
+	return 0;
 }
 
 static int
 delchar(Eek *e, Args *a)
-{ 
-    (void)a; 
-    (void)delat_yank(e, countval(e->count));
-    e->count = 0;
-    return 0;
+{
+	(void)a;
+	(void)delat_yank(e, countval(e->count));
+	e->count = 0;
+	return 0;
 }
 
 static int
