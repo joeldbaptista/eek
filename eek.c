@@ -19,6 +19,7 @@ struct Win {
 	long cx;        /* Cursor x (byte offset within line). */
 	long cy;        /* Cursor y (line index). */
 	long rowoff;    /* Topmost visible line (scroll offset). */
+	long coloff;    /* Leftmost visible column (render column scroll offset). */
 	long vax;       /* VISUAL anchor x (byte offset). */
 	long vay;       /* VISUAL anchor y (line index). */
 	long vtipending;/* VISUAL pending text-object modifier. */
@@ -53,6 +54,7 @@ struct Undo {
 	long cx;     /* Cursor x (byte offset within line). */
 	long cy;     /* Cursor y (line index). */
 	long rowoff; /* Topmost visible line (scroll offset). */
+	long coloff; /* Leftmost visible column (render column scroll offset). */
 	long dirty;  /* Dirty flag at time of snapshot. */
 };
 
@@ -125,6 +127,7 @@ struct Eek {
 	long cx;             /* Cursor x: byte offset in current line. */
 	long cy;             /* Cursor y: current line index. */
 	long rowoff;         /* Vertical scroll offset (topmost visible line). */
+	long coloff;         /* Horizontal scroll offset (leftmost visible render column). */
 	long dirty;          /* Non-zero if buffer has unsaved modifications. */
 	long dpending;       /* Pending delete operator ('d' has been typed). */
 	long cpending;       /* Pending change operator ('c' has been typed). */
@@ -1642,6 +1645,7 @@ winnewfrom(Eek *e)
 	w->cx = e->cx;
 	w->cy = e->cy;
 	w->rowoff = e->rowoff;
+	w->coloff = e->coloff;
 	w->vax = e->vax;
 	w->vay = e->vay;
 	w->vtipending = e->vtipending;
@@ -1659,6 +1663,7 @@ winload(Eek *e, Win *w)
 	e->cx = w->cx;
 	e->cy = w->cy;
 	e->rowoff = w->rowoff;
+	e->coloff = w->coloff;
 	e->vax = w->vax;
 	e->vay = w->vay;
 	e->vtipending = w->vtipending;
@@ -1680,6 +1685,7 @@ winstore(Eek *e)
 	w->cx = e->cx;
 	w->cy = e->cy;
 	w->rowoff = e->rowoff;
+	w->coloff = e->coloff;
 	w->vax = e->vax;
 	w->vay = e->vay;
 	w->vtipending = e->vtipending;
@@ -1705,6 +1711,8 @@ winclamp(Eek *e, Win *w)
 		w->cx = len;
 	if (w->rowoff < 0)
 		w->rowoff = 0;
+	if (w->coloff < 0)
+		w->coloff = 0;
 }
 
 static long
@@ -2855,6 +2863,33 @@ scroll(Eek *e, long textrows)
 		e->rowoff = e->cy;
 	if (e->cy >= e->rowoff + textrows)
 		e->rowoff = e->cy - textrows + 1;
+}
+
+/*
+ * hscroll adjusts e->coloff so the cursor column is visible.
+ *
+ * textcols is the width (in terminal columns) available for text, excluding
+ * the line-number gutter.
+ */
+static void
+hscroll(Eek *e, long textcols)
+{
+	long rx;
+
+	if (e == nil)
+		return;
+	if (textcols < 1)
+		textcols = 1;
+	if (e->coloff < 0)
+		e->coloff = 0;
+
+	rx = rxfromcx(e, e->cy, e->cx);
+	if (rx < e->coloff)
+		e->coloff = rx;
+	if (rx >= e->coloff + textcols)
+		e->coloff = rx - textcols + 1;
+	if (e->coloff < 0)
+		e->coloff = 0;
 }
 
 static int
@@ -4193,6 +4228,7 @@ draw(Eek *e)
 	Line *l;
 	long i, rx;
 	long tx;
+	long coloff;
 	long ni;
 	long n;
 	int gutter;
@@ -4343,6 +4379,9 @@ draw(Eek *e)
 						}
 					}
 
+					coloff = e->coloff;
+					if (coloff < 0)
+						coloff = 0;
 					rx = gutter;
 					tx = 0;
 					for (i = 0; i < l->n && rx < collim; ) {
@@ -4437,9 +4476,11 @@ draw(Eek *e)
 
 							nsp = TABSTOP - (tx % TABSTOP);
 							while (nsp-- > 0 && rx < collim) {
-								termwrite(&e->t, " ", 1);
+								if (tx >= coloff && rx < collim) {
+									termwrite(&e->t, " ", 1);
+									rx++;
+								}
 								tx++;
-								rx++;
 							}
 							i++;
 							if (idrem > 0)
@@ -4454,8 +4495,10 @@ draw(Eek *e)
 							n = 1;
 						if (i + n > l->n)
 							n = l->n - i;
-						if (rx < collim)
+						if (tx >= coloff && rx < collim) {
 							termwrite(&e->t, &l->s[i], n);
+							rx++;
+						}
 						if (e->syntax == Sync) {
 							if (openstring) {
 								instr = 1;
@@ -4491,7 +4534,6 @@ draw(Eek *e)
 								numrem--;
 						}
 						tx++;
-						rx++;
 						i += n;
 					}
 					if (curinv || curhl != Hlnone)
@@ -4570,7 +4612,7 @@ draw(Eek *e)
 			cyrel = 0;
 		if (cyrel >= cur.h)
 			cyrel = cur.h - 1;
-		cxcol = rxfromcx(e, e->cy, e->cx) + gutter;
+		cxcol = (rxfromcx(e, e->cy, e->cx) - e->coloff) + gutter;
 		if (cxcol < 0)
 			cxcol = 0;
 		if (cxcol >= cur.w)
@@ -5249,6 +5291,14 @@ main(int argc, char **argv)
 			if (!findrect(e.layout, e.curwin, root, &cur))
 				cur = root;
 			scroll(&e, cur.h);
+			{
+				int gut;
+				long textcols;
+
+				gut = gutterwidth(&e, cur.w);
+				textcols = cur.w - gut;
+				hscroll(&e, textcols);
+			}
 		}
 		winstore(&e);
 		winload(&e, e.curwin);
@@ -6279,6 +6329,7 @@ undopush(Eek *e)
 	u->cx = e->cx;
 	u->cy = e->cy;
 	u->rowoff = e->rowoff;
+	u->coloff = e->coloff;
 	u->dirty = e->dirty;
 	e->undopending = 1;
 	return 0;
@@ -6310,6 +6361,9 @@ undopop(Eek *e)
 	e->cx = u.cx;
 	e->cy = clamp(u.cy, 0, e->b.nline > 0 ? e->b.nline - 1 : 0);
 	e->rowoff = clamp(u.rowoff, 0, e->b.nline > 0 ? e->b.nline - 1 : 0);
+	e->coloff = u.coloff;
+	if (e->coloff < 0)
+		e->coloff = 0;
 	e->dirty = u.dirty;
 	if (e->mode != Modenormal)
 		setmode(e, Modenormal);
