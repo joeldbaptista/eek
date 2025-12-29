@@ -7004,7 +7004,7 @@ static const Move nvkeys[] = {
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'w', "{n}w", wordnext },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'b', "{n}b", wordprev },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'G', "{n}G", gotoline },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'g', "gf", gprefix },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'g', "g f", gprefix }, /* pattern string is documentation only; matching uses kind/value */
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'f', "f{c}", findbegin },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'F', "F{c}", findbegin },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 't', "t{c}", findbegin },
