@@ -7,6 +7,7 @@ Notes:
 - eek is **modal**: NORMAL / INSERT / VISUAL / command-line (`:` and `/`).
 - Many NORMAL-mode commands accept **counts** (e.g. `3j`, `12G`, `4dd`, `d3w`, `3f.`).
 - Cursor positions are byte offsets in UTF-8 text; movement is UTF-8 aware.
+- Long lines are supported: eek will **horizontally scroll** as needed to keep the cursor visible.
 
 ---
 
@@ -239,6 +240,20 @@ Options (`:set`):
 - Syntax highlighting:
   - On: `:set syntax` (alias: `syn`)
   - Off: `:set nosyntax` (alias: `nosyn`)
+
+Run shell command (`:run`):
+
+- `:run <command>` executes `<command>` (via the shell) and inserts **stdout** into the buffer.
+- Insertion point: at the cursor position in the current line.
+- Multi-line stdout is inserted as multiple lines; the original tail of the line is preserved after the inserted output.
+
+Remaps (`:map`, `:unmap`):
+
+- `:map <lhs> <rhs>` maps a **single character** `<lhs>` to an injected key sequence `<rhs>`.
+  - Applies in NORMAL and VISUAL.
+  - `<rhs>` is treated as UTF-8 text (runes) and is inserted as if you typed it.
+  - The injected keys are **non-remappable** (prevents recursive maps).
+- `:unmap <lhs>` removes a mapping.
 
 ---
 

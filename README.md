@@ -31,6 +31,7 @@ Design principles:
 	- The buffer stores UTF-8 bytes.
 	- Movement and rendering are UTF-8 aware (cursor steps by codepoint boundaries).
 	- The editor aims to behave sensibly on real-world UTF-8 files without pulling in heavy Unicode machinery.
+	- Long lines are supported via automatic horizontal scrolling.
 
 Non-goals:
 
@@ -86,6 +87,20 @@ eek implements a small subset of vi/ex style command-line commands.
 - `:e filename` opens `filename` in the current tab.
 - If `filename` does not exist, `:e filename` opens an empty buffer and sets the name.
 - Use `:e! filename` to discard unsaved changes in the current tab.
+
+### Run a shell command (`:run`)
+
+- `:run <command>` executes `<command>` (via the shell) and inserts its **stdout** into the buffer.
+- Output is inserted at the cursor position; multi-line output becomes multiple lines.
+
+### Mappings (`:map`, `:unmap`)
+
+eek supports a minimal mapping mechanism intended as a foundation for richer command systems.
+
+- `:map <lhs> <rhs>` maps a single UTF-8 character `<lhs>` to an injected key sequence `<rhs>`.
+	- Applies in NORMAL and VISUAL.
+	- The injected keys are non-remappable to avoid recursive mappings.
+- `:unmap <lhs>` removes the mapping.
 
 ### Paging (`(`, `)`)
 
@@ -226,6 +241,7 @@ struct Undo {
 	long cx;     /* cursor x (byte offset) */
 	long cy;     /* cursor y (line index) */
 	long rowoff; /* vertical scroll offset */
+	long coloff; /* horizontal scroll offset */
 	long dirty;  /* whether the buffer is considered modified */
 };
 ```
@@ -242,6 +258,7 @@ Undo captures:
 - The full text contents (`Buf`, all `Line` data).
 - Cursor position (`cx`, `cy`).
 - Scroll position (`rowoff`).
+- Horizontal scroll position (`coloff`).
 - The dirty flag (`dirty`).
 
 Undo does *not* capture:
