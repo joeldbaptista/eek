@@ -47,9 +47,9 @@ struct Move {
 static int movematch(const Move *m, int mode, const Key *k);
 static int movedispatch(Eek *e, int mode, const Move *moves, long nmoves, const Key *k, Args *a);
 
-static int handle_cmd_key(Eek *e, const Key *k);
-static int handle_insert_key(Eek *e, const Key *k);
-static int handle_normal_visual_key(Eek *e, const Key *k);
+static int cmdkey(Eek *e, const Key *k);
+static int inskey(Eek *e, const Key *k);
+static int nvkey(Eek *e, const Key *k);
 
 typedef struct Win Win;
 struct Win {
@@ -5879,7 +5879,7 @@ openlineabove(Eek *e)
 }
 
 static int
-mv_cmd_esc(Eek *e, Args *a)
+cmdesc(Eek *e, Args *a)
 {
 	(void)a;
 	if (e == nil)
@@ -5896,7 +5896,7 @@ mv_cmd_esc(Eek *e, Args *a)
 }
 
 static int
-mv_cmd_enter(Eek *e, Args *a)
+cmdenter(Eek *e, Args *a)
 {
 	(void)a;
 	if (e == nil)
@@ -5914,7 +5914,7 @@ mv_cmd_enter(Eek *e, Args *a)
 }
 
 static int
-mv_cmd_backspace(Eek *e, Args *a)
+cmdbs(Eek *e, Args *a)
 {
 	(void)a;
 	if (e == nil)
@@ -5925,7 +5925,7 @@ mv_cmd_backspace(Eek *e, Args *a)
 }
 
 static int
-mv_cmd_rune(Eek *e, Args *a)
+cmdrune(Eek *e, Args *a)
 {
 	long r;
 
@@ -5933,7 +5933,7 @@ mv_cmd_rune(Eek *e, Args *a)
 		return 0;
 	r = argsat(a, 0, 0);
 	if (r == '\n')
-		return mv_cmd_enter(e, a);
+		return cmdenter(e, a);
 	if (r >= 0x20 && r < 0x7f) {
 		if (e->cmdn + 1 < (long)sizeof e->cmd)
 			e->cmd[e->cmdn++] = (char)r;
@@ -5941,15 +5941,15 @@ mv_cmd_rune(Eek *e, Args *a)
 	return 0;
 }
 
-static const Move cmd_moves[] = {
-	{ 1u << Modecmd, Keyesc, 0, "<Esc>", mv_cmd_esc },
-	{ 1u << Modecmd, Keyenter, 0, "<Enter>", mv_cmd_enter },
-	{ 1u << Modecmd, Keybackspace, 0, "<BS>", mv_cmd_backspace },
-	{ 1u << Modecmd, Keyrune, -1, "{c}", mv_cmd_rune },
+static const Move cmdkeys[] = {
+	{ 1u << Modecmd, Keyesc, 0, "<Esc>", cmdesc },
+	{ 1u << Modecmd, Keyenter, 0, "<Enter>", cmdenter },
+	{ 1u << Modecmd, Keybackspace, 0, "<BS>", cmdbs },
+	{ 1u << Modecmd, Keyrune, -1, "{c}", cmdrune },
 };
 
 static int
-handle_cmd_key(Eek *e, const Key *k)
+cmdkey(Eek *e, const Key *k)
 {
 	Args a;
 
@@ -5958,13 +5958,13 @@ handle_cmd_key(Eek *e, const Key *k)
 	argsinit(&a);
 	if (k->kind == Keyrune)
 		(void)argspush(&a, k->value);
-	(void)movedispatch(e, Modecmd, cmd_moves, (long)(sizeof cmd_moves / sizeof cmd_moves[0]), k, &a);
+	(void)movedispatch(e, Modecmd, cmdkeys, (long)(sizeof cmdkeys / sizeof cmdkeys[0]), k, &a);
 	argsfree(&a);
 	return 1;
 }
 
 static int
-mv_insert_esc(Eek *e, Args *a)
+insesc(Eek *e, Args *a)
 {
 	(void)a;
 	if (e == nil)
@@ -5990,15 +5990,15 @@ mv_insert_esc(Eek *e, Args *a)
 	return 0;
 }
 
-static int mv_insert_left(Eek *e, Args *a) { (void)a; movel(e); return 0; }
-static int mv_insert_right(Eek *e, Args *a) { (void)a; mover(e); return 0; }
-static int mv_insert_up(Eek *e, Args *a) { (void)a; moveu(e); return 0; }
-static int mv_insert_down(Eek *e, Args *a) { (void)a; moved(e); return 0; }
-static int mv_insert_backspace(Eek *e, Args *a) { (void)a; (void)delback(e); return 0; }
-static int mv_insert_enter(Eek *e, Args *a) { (void)a; (void)insertnl(e); return 0; }
+static int insleft(Eek *e, Args *a) { (void)a; movel(e); return 0; }
+static int insright(Eek *e, Args *a) { (void)a; mover(e); return 0; }
+static int insup(Eek *e, Args *a) { (void)a; moveu(e); return 0; }
+static int insdown(Eek *e, Args *a) { (void)a; moved(e); return 0; }
+static int insbs(Eek *e, Args *a) { (void)a; (void)delback(e); return 0; }
+static int insenter(Eek *e, Args *a) { (void)a; (void)insertnl(e); return 0; }
 
 static int
-mv_insert_rune(Eek *e, Args *a)
+insrune(Eek *e, Args *a)
 {
 	char s[8];
 	long n;
@@ -6023,19 +6023,19 @@ mv_insert_rune(Eek *e, Args *a)
 	return 0;
 }
 
-static const Move insert_moves[] = {
-	{ 1u << Modeinsert, Keyesc, 0, "<Esc>", mv_insert_esc },
-	{ 1u << Modeinsert, Keyleft, 0, "<Left>", mv_insert_left },
-	{ 1u << Modeinsert, Keyright, 0, "<Right>", mv_insert_right },
-	{ 1u << Modeinsert, Keyup, 0, "<Up>", mv_insert_up },
-	{ 1u << Modeinsert, Keydown, 0, "<Down>", mv_insert_down },
-	{ 1u << Modeinsert, Keybackspace, 0, "<BS>", mv_insert_backspace },
-	{ 1u << Modeinsert, Keyenter, 0, "<Enter>", mv_insert_enter },
-	{ 1u << Modeinsert, Keyrune, -1, "{c}", mv_insert_rune },
+static const Move inskeys[] = {
+	{ 1u << Modeinsert, Keyesc, 0, "<Esc>", insesc },
+	{ 1u << Modeinsert, Keyleft, 0, "<Left>", insleft },
+	{ 1u << Modeinsert, Keyright, 0, "<Right>", insright },
+	{ 1u << Modeinsert, Keyup, 0, "<Up>", insup },
+	{ 1u << Modeinsert, Keydown, 0, "<Down>", insdown },
+	{ 1u << Modeinsert, Keybackspace, 0, "<BS>", insbs },
+	{ 1u << Modeinsert, Keyenter, 0, "<Enter>", insenter },
+	{ 1u << Modeinsert, Keyrune, -1, "{c}", insrune },
 };
 
 static int
-handle_insert_key(Eek *e, const Key *k)
+inskey(Eek *e, const Key *k)
 {
 	Args a;
 
@@ -6044,17 +6044,17 @@ handle_insert_key(Eek *e, const Key *k)
 	argsinit(&a);
 	if (k->kind == Keyrune)
 		(void)argspush(&a, k->value);
-	(void)movedispatch(e, Modeinsert, insert_moves, (long)(sizeof insert_moves / sizeof insert_moves[0]), k, &a);
+	(void)movedispatch(e, Modeinsert, inskeys, (long)(sizeof inskeys / sizeof inskeys[0]), k, &a);
 	argsfree(&a);
 	return 1;
 }
 
 /* NORMAL/VISUAL move implementations (table-driven). */
-static int mv_nv_quit(Eek *e, Args *a) { (void)a; e->quit = 1; return 0; }
-static int mv_nv_undo(Eek *e, Args *a) { (void)a; undopop(e); e->count = 0; e->opcount = 0; e->lastnormalrune = 0; e->lastmotioncount = 0; e->seqcount = 0; return 0; }
+static int quit(Eek *e, Args *a) { (void)a; e->quit = 1; return 0; }
+static int undo(Eek *e, Args *a) { (void)a; undopop(e); e->count = 0; e->opcount = 0; e->lastnormalrune = 0; e->lastmotioncount = 0; e->seqcount = 0; return 0; }
 
 static int
-mv_nv_search_next(Eek *e, Args *a)
+searchnext(Eek *e, Args *a)
 {
 	(void)a;
 	if (e->lastsearch == nil || e->lastsearch[0] == 0) {
@@ -6072,7 +6072,7 @@ mv_nv_search_next(Eek *e, Args *a)
 }
 
 static int
-mv_nv_search_prev(Eek *e, Args *a)
+searchprev(Eek *e, Args *a)
 {
 	(void)a;
 	if (e->lastsearch == nil || e->lastsearch[0] == 0) {
@@ -6090,7 +6090,7 @@ mv_nv_search_prev(Eek *e, Args *a)
 }
 
 static int
-mv_nv_toggle_visual(Eek *e, Args *a)
+vistoggle(Eek *e, Args *a)
 {
 	(void)a;
 	if (e->mode == Modevisual) {
@@ -6120,7 +6120,7 @@ mv_nv_toggle_visual(Eek *e, Args *a)
 }
 
 static int
-mv_nv_cmdline(Eek *e, Args *a)
+exline(Eek *e, Args *a)
 {
 	int wasvisual;
 
@@ -6145,7 +6145,7 @@ mv_nv_cmdline(Eek *e, Args *a)
 }
 
 static int
-mv_nv_searchcmd(Eek *e, Args *a)
+searchline(Eek *e, Args *a)
 {
 	(void)a;
 	setmode(e, Modecmd);
@@ -6159,12 +6159,12 @@ mv_nv_searchcmd(Eek *e, Args *a)
 	return 0;
 }
 
-static int mv_nv_begin_d(Eek *e, Args *a) { (void)a; e->opcount = countval(e->count); e->count = 0; e->dpending = 1; e->lastnormalrune = 0; e->lastmotioncount = 0; e->seqcount = 0; return 0; }
-static int mv_nv_begin_c(Eek *e, Args *a) { (void)a; e->opcount = countval(e->count); e->count = 0; e->cpending = 1; e->lastnormalrune = 0; e->lastmotioncount = 0; e->seqcount = 0; return 0; }
-static int mv_nv_begin_y(Eek *e, Args *a) { (void)a; e->opcount = countval(e->count); e->count = 0; e->ypending = 1; e->lastnormalrune = 0; e->lastmotioncount = 0; e->seqcount = 0; return 0; }
+static int opdel(Eek *e, Args *a) { (void)a; e->opcount = countval(e->count); e->count = 0; e->dpending = 1; e->lastnormalrune = 0; e->lastmotioncount = 0; e->seqcount = 0; return 0; }
+static int opchg(Eek *e, Args *a) { (void)a; e->opcount = countval(e->count); e->count = 0; e->cpending = 1; e->lastnormalrune = 0; e->lastmotioncount = 0; e->seqcount = 0; return 0; }
+static int opyank(Eek *e, Args *a) { (void)a; e->opcount = countval(e->count); e->count = 0; e->ypending = 1; e->lastnormalrune = 0; e->lastmotioncount = 0; e->seqcount = 0; return 0; }
 
 static int
-mv_nv_begin_find(Eek *e, Args *a)
+findbegin(Eek *e, Args *a)
 {
 	long mode;
 
@@ -6182,7 +6182,7 @@ mv_nv_begin_find(Eek *e, Args *a)
 }
 
 static int
-mv_nv_paste(Eek *e, Args *a)
+paste(Eek *e, Args *a)
 {
 	(void)a;
 	if (e->yline)
@@ -6194,7 +6194,7 @@ mv_nv_paste(Eek *e, Args *a)
 }
 
 static int
-mv_nv_paste_before(Eek *e, Args *a)
+pastebefore(Eek *e, Args *a)
 {
 	(void)a;
 	if (e->yline)
@@ -6206,7 +6206,7 @@ mv_nv_paste_before(Eek *e, Args *a)
 }
 
 static int
-mv_nv_C(Eek *e, Args *a)
+chgend(Eek *e, Args *a)
 {
 	Line *l;
 	long len;
@@ -6250,7 +6250,7 @@ mv_nv_C(Eek *e, Args *a)
 }
 
 static int
-mv_nv_a(Eek *e, Args *a)
+insafter(Eek *e, Args *a)
 {
 	(void)a;
 	e->cx = nextutf8(e, e->cy, e->cx);
@@ -6264,7 +6264,7 @@ mv_nv_a(Eek *e, Args *a)
 }
 
 static int
-mv_nv_A(Eek *e, Args *a)
+insend(Eek *e, Args *a)
 {
 	(void)a;
 	e->cx = linelen(e, e->cy);
@@ -6277,11 +6277,11 @@ mv_nv_A(Eek *e, Args *a)
 	return 0;
 }
 
-static int mv_nv_o(Eek *e, Args *a) { (void)a; (void)openlinebelow(e); e->lastnormalrune = 0; return 0; }
-static int mv_nv_O(Eek *e, Args *a) { (void)a; (void)openlineabove(e); e->lastnormalrune = 0; return 0; }
+static int openbelow(Eek *e, Args *a) { (void)a; (void)openlinebelow(e); e->lastnormalrune = 0; return 0; }
+static int openabove(Eek *e, Args *a) { (void)a; (void)openlineabove(e); e->lastnormalrune = 0; return 0; }
 
 static int
-mv_nv_h(Eek *e, Args *a)
+curleft(Eek *e, Args *a)
 {
 	(void)a;
 	repeat(e, movel, countval(e->count));
@@ -6290,7 +6290,7 @@ mv_nv_h(Eek *e, Args *a)
 }
 
 static int
-mv_nv_j(Eek *e, Args *a)
+curdown(Eek *e, Args *a)
 {
 	(void)a;
 	repeat(e, moved, countval(e->count));
@@ -6299,7 +6299,7 @@ mv_nv_j(Eek *e, Args *a)
 }
 
 static int
-mv_nv_k(Eek *e, Args *a)
+curup(Eek *e, Args *a)
 {
 	(void)a;
 	repeat(e, moveu, countval(e->count));
@@ -6308,7 +6308,7 @@ mv_nv_k(Eek *e, Args *a)
 }
 
 static int
-mv_nv_l(Eek *e, Args *a)
+curright(Eek *e, Args *a)
 {
 	(void)a;
 	repeat(e, mover, countval(e->count));
@@ -6317,7 +6317,7 @@ mv_nv_l(Eek *e, Args *a)
 }
 
 static int
-mv_nv_page(Eek *e, Args *a)
+page(Eek *e, Args *a)
 {
 	long r;
 	long npage;
@@ -6339,11 +6339,11 @@ mv_nv_page(Eek *e, Args *a)
 	return 0;
 }
 
-static int mv_nv_home(Eek *e, Args *a) { (void)a; e->cx = 0; return 0; }
-static int mv_nv_end(Eek *e, Args *a) { (void)a; e->cx = linelen(e, e->cy); return 0; }
+static int bol(Eek *e, Args *a) { (void)a; e->cx = 0; return 0; }
+static int eol(Eek *e, Args *a) { (void)a; e->cx = linelen(e, e->cy); return 0; }
 
 static int
-mv_nv_w(Eek *e, Args *a)
+wordnext(Eek *e, Args *a)
 {
 	(void)a;
 	repeat(e, movew, countval(e->count));
@@ -6352,7 +6352,7 @@ mv_nv_w(Eek *e, Args *a)
 }
 
 static int
-mv_nv_b(Eek *e, Args *a)
+wordprev(Eek *e, Args *a)
 {
 	(void)a;
 	repeat(e, moveb, countval(e->count));
@@ -6360,11 +6360,27 @@ mv_nv_b(Eek *e, Args *a)
 	return 0;
 }
 
-static int mv_nv_i(Eek *e, Args *a) { (void)a; setmode(e, Modeinsert); e->count = 0; e->opcount = 0; return 0; }
-static int mv_nv_x(Eek *e, Args *a) { (void)a; (void)delat_yank(e, countval(e->count)); e->count = 0; return 0; }
+static int
+insbefore(Eek *e, Args *a)
+{
+    (void)a;
+    setmode(e, Modeinsert);
+    e->count = 0;
+    e->opcount = 0;
+    return 0;
+}
 
 static int
-mv_nv_G(Eek *e, Args *a)
+delchar(Eek *e, Args *a)
+{ 
+    (void)a; 
+    (void)delat_yank(e, countval(e->count));
+    e->count = 0;
+    return 0;
+}
+
+static int
+gotoline(Eek *e, Args *a)
 {
 	(void)a;
 	if (e->count > 0)
@@ -6378,7 +6394,7 @@ mv_nv_G(Eek *e, Args *a)
 }
 
 static int
-mv_nv_g(Eek *e, Args *a)
+gprefix(Eek *e, Args *a)
 {
 	(void)a;
 	e->lastnormalrune = 'g';
@@ -6388,7 +6404,7 @@ mv_nv_g(Eek *e, Args *a)
 }
 
 static int
-mv_nv_space(Eek *e, Args *a)
+leader(Eek *e, Args *a)
 {
 	(void)a;
 	e->lastnormalrune = ' ';
@@ -6399,7 +6415,7 @@ mv_nv_space(Eek *e, Args *a)
 }
 
 static int
-mv_nv_ctrlw(Eek *e, Args *a)
+ctrlw(Eek *e, Args *a)
 {
 	(void)a;
 	e->lastnormalrune = 0x17;
@@ -6408,48 +6424,61 @@ mv_nv_ctrlw(Eek *e, Args *a)
 	return 0;
 }
 
-static const Move normal_visual_moves[] = {
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'q', "q", mv_nv_quit },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'u', "u", mv_nv_undo },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'n', "n", mv_nv_search_next },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'N', "N", mv_nv_search_prev },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'v', "v", mv_nv_toggle_visual },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, ':', ":", mv_nv_cmdline },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, '/', "/", mv_nv_searchcmd },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'd', "d{n}…", mv_nv_begin_d },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'c', "c{n}…", mv_nv_begin_c },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'y', "y{n}…", mv_nv_begin_y },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'f', "f{c}", mv_nv_begin_find },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'F', "F{c}", mv_nv_begin_find },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 't', "t{c}", mv_nv_begin_find },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'T', "T{c}", mv_nv_begin_find },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'p', "p", mv_nv_paste },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'P', "P", mv_nv_paste_before },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'C', "C", mv_nv_C },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'a', "a", mv_nv_a },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'A', "A", mv_nv_A },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'o', "o", mv_nv_o },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'O', "O", mv_nv_O },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'h', "{n}h", mv_nv_h },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'j', "{n}j", mv_nv_j },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'k', "{n}k", mv_nv_k },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'l', "{n}l", mv_nv_l },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, '(', "{n}<PgUp>", mv_nv_page },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, ')', "{n}<PgDn>", mv_nv_page },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, '0', "0", mv_nv_home },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, '$', "$", mv_nv_end },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'w', "{n}w", mv_nv_w },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'b', "{n}b", mv_nv_b },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'i', "i", mv_nv_i },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'x', "{n}x", mv_nv_x },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'G', "{n}G", mv_nv_G },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'g', "g…", mv_nv_g },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, ' ', " <leader>", mv_nv_space },
-	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 0x17, "<C-w>", mv_nv_ctrlw },
+static const Move nvkeys[] = {
+	/* motion */
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'h', "{n}h", curleft },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'j', "{n}j", curdown },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'k', "{n}k", curup },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'l', "{n}l", curright },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, '(', "{n}<PgUp>", page },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, ')', "{n}<PgDn>", page },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, '0', "0", bol },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, '$', "$", eol },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'w', "{n}w", wordnext },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'b', "{n}b", wordprev },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'G', "{n}G", gotoline },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'g', "gf", gprefix },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'f', "f{c}", findbegin },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'F', "F{c}", findbegin },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 't', "t{c}", findbegin },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'T', "T{c}", findbegin },
+
+	/* mode */
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'v', "v", vistoggle },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, ':', ":", exline },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, '/', "/", searchline },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'i', "i", insbefore },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'a', "a", insafter },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'A', "A", insend },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'o', "o", openbelow },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'O', "O", openabove },
+
+	/* operators */
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'd', "d{n}f", opdel },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'c', "c{n}f", opchg },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'y', "y{n}f", opyank },
+
+	/* edits */
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'x', "{n}x", delchar },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'C', "C", chgend },
+
+	/* paste */
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'p', "p", paste },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'P', "P", pastebefore },
+
+	/* search */
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'n', "n", searchnext },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'N', "N", searchprev },
+
+	/* meta */
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'u', "u", undo },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'q', "q", quit },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, ' ', " <leader>", leader },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 0x17, "<C-w>", ctrlw },
 };
 
 static int
-handle_normal_visual_key(Eek *e, const Key *k)
+nvkey(Eek *e, const Key *k)
 {
 	Args a;
 	long r;
@@ -6969,7 +6998,7 @@ handle_normal_visual_key(Eek *e, const Key *k)
 	argsinit(&a);
 	if (k->value == 'f' || k->value == 'F' || k->value == 't' || k->value == 'T' || k->value == '(' || k->value == ')')
 		(void)argspush(&a, k->value);
-	handled = movedispatch(e, e->mode, normal_visual_moves, (long)(sizeof normal_visual_moves / sizeof normal_visual_moves[0]), k, &a);
+	handled = movedispatch(e, e->mode, nvkeys, (long)(sizeof nvkeys / sizeof nvkeys[0]), k, &a);
 	argsfree(&a);
 
 	/* Apply the original afterkey state cleanup rules when a rune move fired. */
@@ -7084,14 +7113,14 @@ main(int argc, char **argv)
 		}
 
 		if (e.mode == Modecmd) {
-			(void)handle_cmd_key(&e, &kev.k);
+			(void)cmdkey(&e, &kev.k);
 			continue;
 		}
 		if (e.mode == Modeinsert) {
-			(void)handle_insert_key(&e, &kev.k);
+			(void)inskey(&e, &kev.k);
 			continue;
 		}
-		(void)handle_normal_visual_key(&e, &kev.k);
+		(void)nvkey(&e, &kev.k);
 		if (e.quit)
 			break;
 	}
