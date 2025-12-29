@@ -31,6 +31,7 @@ Design principles:
 	- The buffer stores UTF-8 bytes.
 	- Movement and rendering are UTF-8 aware (cursor steps by codepoint boundaries).
 	- The editor aims to behave sensibly on real-world UTF-8 files without pulling in heavy Unicode machinery.
+	- Long lines are supported via automatic horizontal scrolling.
 
 Non-goals:
 
@@ -86,6 +87,20 @@ eek implements a small subset of vi/ex style command-line commands.
 - `:e filename` opens `filename` in the current tab.
 - If `filename` does not exist, `:e filename` opens an empty buffer and sets the name.
 - Use `:e! filename` to discard unsaved changes in the current tab.
+
+### Run a shell command (`:run`)
+
+- `:run <command>` executes `<command>` (via the shell) and inserts its **stdout** into the buffer.
+- Output is inserted at the cursor position; multi-line output becomes multiple lines.
+
+### Mappings (`:map`, `:unmap`)
+
+eek supports a minimal mapping mechanism intended as a foundation for richer command systems.
+
+- `:map <lhs> <rhs>` maps a single UTF-8 character `<lhs>` to an injected key sequence `<rhs>`.
+	- Applies in NORMAL and VISUAL.
+	- The injected keys are non-remappable to avoid recursive mappings.
+- `:unmap <lhs>` removes the mapping.
 
 ### Paging (`(`, `)`)
 
@@ -226,6 +241,7 @@ struct Undo {
 	long cx;     /* cursor x (byte offset) */
 	long cy;     /* cursor y (line index) */
 	long rowoff; /* vertical scroll offset */
+	long coloff; /* horizontal scroll offset */
 	long dirty;  /* whether the buffer is considered modified */
 };
 ```
@@ -242,6 +258,7 @@ Undo captures:
 - The full text contents (`Buf`, all `Line` data).
 - Cursor position (`cx`, `cy`).
 - Scroll position (`rowoff`).
+- Horizontal scroll position (`coloff`).
 - The dirty flag (`dirty`).
 
 Undo does *not* capture:
@@ -302,25 +319,12 @@ eek is intentionally minimal, but there are several improvements that fit the â€
 	- With snapshot-based undo, redo is typically implemented as a second stack.
 	- New edits should clear the redo stack (like most editors).
 
-- Repeat last change (`.`)
-	- Record the last *editing* action (not just motion) and replay it.
-	- This is one of the highest leverage vi features once operators/motions exist.
-
-- More linewise operators
-	- `D` as `d$` (delete to end-of-line) to mirror the existing `C`.
-	- `S` as `cc` (change entire line) for quick rewriting.
-
-- Replace/substitute primitives
-	- `r{char}`: replace the character under the cursor (count-aware).
-	- `s`: delete one character and enter INSERT (similar to `cl`).
-
 - Indentation
 	- `>>` / `<<` (and counts) for simple line indentation shifting.
 	- Keep it compile-time configurable (tabs vs spaces) to stay suckless-style.
 
 ### Motions and text objects
 
-- More character find motions: `F{c}`, `t{c}`, `T{c}` plus repeats `;` and `,`.
 - Better line navigation: `^` (first non-blank), `H`/`M`/`L` (top/middle/bottom of the viewport).
 - Paragraph movement: `{` and `}` (blank-line separated).
 - Word text objects: `iw` / `aw` so `diw`, `ciw`, `yiw` become available.

@@ -14,6 +14,50 @@
 
 typedef struct Eek Eek;
 
+typedef struct KeyEvent KeyEvent;
+struct KeyEvent {
+	Key k;
+	int nomap;
+	int src;
+};
+
+enum {
+	Keysrcuser,
+	Keysrcmap,
+	Keysrcdot,
+};
+
+typedef struct Args Args;
+struct Args {
+	long v[8];
+	int n;
+	long *heap;
+	int heapcap;
+};
+
+static void argsinit(Args *a);
+static void argsfree(Args *a);
+static int argspush(Args *a, long v);
+static long argsat(const Args *a, int i, long def);
+
+typedef int (*MoveFn)(Eek *e, Args *a);
+
+typedef struct Move Move;
+struct Move {
+	unsigned int modes; /* bitmask of Mode* values */
+	int kind;           /* Key kind to match (Keyrune, Keyesc, ...) */
+	long value;         /* for Keyrune: rune value; -1 matches any rune */
+	const char *pattern;/* human-readable pattern (e.g. "d{n}w", "{n}j") */
+	MoveFn fn;
+};
+
+static int movematch(const Move *m, int mode, const Key *k);
+static int movedispatch(Eek *e, int mode, const Move *moves, long nmoves, const Key *k, Args *a);
+
+static int cmdkey(Eek *e, const Key *k);
+static int inskey(Eek *e, const Key *k);
+static int nvkey(Eek *e, const Key *k);
+
 typedef struct Win Win;
 struct Win {
 	long cx;        /* Cursor x (byte offset within line). */
@@ -136,6 +180,10 @@ struct Eek {
 	long fcount;         /* Count for pending find motion (nth occurrence). */
 	long fmode;          /* Pending find mode: 'f','F','t','T'. */
 	long fop;            /* Pending operator for find: 0,'d','c','y'. */
+	long lastfindr;      /* Last successful find target rune. */
+	long lastfindmode;   /* Last successful find mode: 'f','F','t','T'. */
+	long rpending;       /* Pending replace-char command ('r' waiting for a rune). */
+	long rcount;         /* Repeat count for pending replace. */
 	long tipending;      /* Pending text-object modifier (e.g. 'di' waiting for delimiter). */
 	long tiop;           /* Text-object operator that is pending ('d' or 'c'). */
 	long vax;            /* VISUAL anchor x (byte offset). */
@@ -162,16 +210,39 @@ struct Eek {
 	long ntab;           /* Number of tabs (tab slots). */
 	long captab;         /* Allocated capacity of tab[] in entries. */
 	long curtab;         /* Active tab index (tab[curtab] slot is empty). */
+	KeyEvent feed[512];  /* Injected key events (for maps/macros). */
+	int feedhead;        /* Index of first valid event in feed[]. */
+	int feedlen;         /* Number of valid events in feed[]. */
+	KeyEvent dotbuf[512]; /* Last change (NORMAL '.') replay buffer. */
+	int dotlen;
+	KeyEvent dotrecbuf[512]; /* Recording buffer for in-progress change. */
+	int dotreclen;
+	int dotrec;
+	long dotnundo0;
+	int dotreplayleft;
+	struct {
+		unsigned modes; /* bitmask of Mode* values */
+		long lhs;       /* single rune key */
+		char *rhs;      /* UTF-8 string to inject */
+	} *maps;
+	long nmaps;
+	long capmaps;
 };
 
 static long linelen(Eek *e, long y);
 static long clamp(long v, long lo, long hi);
 static long prevutf8(Eek *e, long y, long at);
 static long nextutf8(Eek *e, long y, long at);
+static long countval(long n);
 static void setmsg(Eek *e, const char *fmt, ...);
 static long utf8enc(long r, char *s);
+static void yclear(Eek *e);
+static int yset(Eek *e, const char *s, long n, int linewise);
+static int yappend(Eek *e, const char *s, long n);
+static int yanklines(Eek *e, long at, long n);
 static int insertbytes(Eek *e, const char *s, long n);
 static int insertnl(Eek *e);
+static int delat_yank(Eek *e, long n);
 static void wordtarget(Eek *e, long *ty, long *tx);
 static void endwordtarget(Eek *e, long *ty, long *tx);
 static void setmode(Eek *e, int mode);
@@ -221,6 +292,623 @@ static void undofree(Eek *e);
 static void undopop(Eek *e);
 
 static void normalfixcursor(Eek *e);
+
+static long utf8dec1(const char *s, long n, long *adv);
+
+static int feedpop(Eek *e, KeyEvent *ev);
+static int feedpushfront(Eek *e, const KeyEvent *ev);
+
+static int mapset(Eek *e, unsigned modes, long lhs, const char *rhs);
+static int mapdel(Eek *e, unsigned modes, long lhs);
+static int mapapply(Eek *e, int mode, long lhs);
+static void mapfreeall(Eek *e);
+
+static int dotstartkey(long r);
+static void dotrecstart(Eek *e);
+static void dotrecsave(Eek *e);
+static void dotreccancel(Eek *e);
+static void dotrecadd(Eek *e, const KeyEvent *ev);
+static int dotrepeat(Eek *e, Args *a);
+static int findagain(Eek *e, Args *a);
+static int findagainrev(Eek *e, Args *a);
+static void replchars(Eek *e, long r, long n);
+static int replbegin(Eek *e, Args *a);
+static int subchar(Eek *e, Args *a);
+static int delend(Eek *e, Args *a);
+static int sublinecmd(Eek *e, Args *a);
+
+static void
+argsinit(Args *a)
+{
+	if (a == nil)
+		return;
+	memset(a, 0, sizeof *a);
+}
+
+static long
+utf8dec1(const char *s, long n, long *adv)
+{
+	unsigned char c;
+	long r;
+	long m;
+
+	if (adv)
+		*adv = 0;
+	if (s == nil || n <= 0)
+		return -1;
+	c = (unsigned char)s[0];
+	if (c < 0x80) {
+		if (adv)
+			*adv = 1;
+		return (long)c;
+	}
+	/* 2-byte */
+	if ((c & 0xe0) == 0xc0 && n >= 2) {
+		m = (unsigned char)s[1];
+		if ((m & 0xc0) != 0x80)
+			goto bad;
+		r = ((long)(c & 0x1f) << 6) | (long)(m & 0x3f);
+		if (adv)
+			*adv = 2;
+		return r;
+	}
+	/* 3-byte */
+	if ((c & 0xf0) == 0xe0 && n >= 3) {
+		long b1, b2;
+		b1 = (unsigned char)s[1];
+		b2 = (unsigned char)s[2];
+		if ((b1 & 0xc0) != 0x80 || (b2 & 0xc0) != 0x80)
+			goto bad;
+		r = ((long)(c & 0x0f) << 12) | ((long)(b1 & 0x3f) << 6) | (long)(b2 & 0x3f);
+		if (adv)
+			*adv = 3;
+		return r;
+	}
+	/* 4-byte */
+	if ((c & 0xf8) == 0xf0 && n >= 4) {
+		long b1, b2, b3;
+		b1 = (unsigned char)s[1];
+		b2 = (unsigned char)s[2];
+		b3 = (unsigned char)s[3];
+		if ((b1 & 0xc0) != 0x80 || (b2 & 0xc0) != 0x80 || (b3 & 0xc0) != 0x80)
+			goto bad;
+		r = ((long)(c & 0x07) << 18) | ((long)(b1 & 0x3f) << 12) | ((long)(b2 & 0x3f) << 6) | (long)(b3 & 0x3f);
+		if (adv)
+			*adv = 4;
+		return r;
+	}
+
+bad:
+	if (adv)
+		*adv = 1;
+	return (long)c;
+}
+
+static int
+feedpop(Eek *e, KeyEvent *ev)
+{
+	KeyEvent out;
+
+	if (e == nil || ev == nil)
+		return 0;
+	if (e->feedlen <= 0)
+		return 0;
+	out = e->feed[e->feedhead];
+	e->feedhead = (e->feedhead + 1) % (int)(sizeof e->feed / sizeof e->feed[0]);
+	e->feedlen--;
+	*ev = out;
+	return 1;
+}
+
+static int
+feedpushfront(Eek *e, const KeyEvent *ev)
+{
+	int cap;
+
+	if (e == nil || ev == nil)
+		return -1;
+	cap = (int)(sizeof e->feed / sizeof e->feed[0]);
+	if (e->feedlen >= cap)
+		return -1;
+	e->feedhead = (e->feedhead - 1 + cap) % cap;
+	e->feed[e->feedhead] = *ev;
+	e->feedlen++;
+	return 0;
+}
+
+static int
+dotstartkey(long r)
+{
+	switch (r) {
+	case 'v':
+	case 'V':
+	case 'd':
+	case 'c':
+	case 's':
+	case 'r':
+	case 'x':
+	case 'p':
+	case 'P':
+	case 'C':
+	case 'D':
+	case 'S':
+	case 'i':
+	case 'a':
+	case 'A':
+	case 'o':
+	case 'O':
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+static void
+replchars(Eek *e, long r, long n)
+{
+	Line *l;
+	char s[8];
+	long nb;
+	long i;
+	long x1;
+	long len;
+
+	if (e == nil)
+		return;
+	if (n <= 0)
+		return;
+	if (undopush(e) < 0)
+		return;
+
+	nb = utf8enc(r, s);
+	if (nb <= 0)
+		return;
+
+	for (i = 0; i < n; i++) {
+		l = bufgetline(&e->b, e->cy);
+		if (l == nil)
+			break;
+		len = l->n;
+		if (e->cx < 0)
+			e->cx = 0;
+		if (e->cx >= len)
+			break;
+		x1 = nextutf8(e, e->cy, e->cx);
+		if (x1 <= e->cx)
+			break;
+		if (linedelrange(l, e->cx, x1 - e->cx) < 0)
+			break;
+		if (lineinsert(l, e->cx, s, nb) < 0)
+			break;
+		e->dirty = 1;
+		if (i + 1 < n)
+			e->cx = nextutf8(e, e->cy, e->cx);
+	}
+}
+
+static int
+replbegin(Eek *e, Args *a)
+{
+	(void)a;
+	if (e == nil)
+		return 0;
+	e->rpending = 1;
+	e->rcount = countval(e->count);
+	e->count = 0;
+	e->opcount = 0;
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	return 0;
+}
+
+static int
+subchar(Eek *e, Args *a)
+{
+	long n;
+
+	(void)a;
+	if (e == nil)
+		return 0;
+	n = countval(e->count);
+	e->count = 0;
+	e->opcount = 0;
+	(void)delat_yank(e, n);
+	setmode(e, Modeinsert);
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	return 0;
+}
+
+static int
+delend(Eek *e, Args *a)
+{
+	Line *l;
+	long len;
+	long nlines;
+	long i;
+
+	(void)a;
+	if (e == nil)
+		return 0;
+	nlines = countval(e->count);
+	e->count = 0;
+	e->opcount = 0;
+	if (undopush(e) < 0)
+		return 0;
+	l = bufgetline(&e->b, e->cy);
+	if (l != nil) {
+		len = l->n;
+		if (e->cx < len)
+			(void)yset(e, l->s + e->cx, len - e->cx, 0);
+		else
+			yclear(e);
+		if (e->cx < len)
+			(void)linedelrange(l, e->cx, len - e->cx);
+	}
+	for (i = 1; i < nlines; i++) {
+		Line *nl;
+		char nlsep;
+
+		nl = bufgetline(&e->b, e->cy + 1);
+		if (nl == nil)
+			break;
+		nlsep = '\n';
+		(void)yappend(e, &nlsep, 1);
+		if (nl->n > 0)
+			(void)yappend(e, nl->s, nl->n);
+		(void)bufdelline(&e->b, e->cy + 1);
+	}
+	e->dirty = 1;
+	if (e->mode == Modenormal)
+		normalfixcursor(e);
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	return 0;
+}
+
+static int
+sublinecmd(Eek *e, Args *a)
+{
+	Line *l;
+	long n;
+	long i;
+
+	(void)a;
+	if (e == nil)
+		return 0;
+	n = countval(e->count);
+	e->count = 0;
+	e->opcount = 0;
+	if (undopush(e) < 0)
+		return 0;
+	(void)yanklines(e, e->cy, n);
+
+	l = bufgetline(&e->b, e->cy);
+	if (l == nil)
+		return 0;
+	if (l->n > 0)
+		(void)linedelrange(l, 0, l->n);
+	for (i = 1; i < n; i++) {
+		if (e->cy + 1 >= e->b.nline)
+			break;
+		(void)bufdelline(&e->b, e->cy + 1);
+	}
+	e->cx = 0;
+	e->dirty = 1;
+	setmode(e, Modeinsert);
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	return 0;
+}
+
+static void
+dotrecstart(Eek *e)
+{
+	if (e == nil)
+		return;
+	e->dotrec = 1;
+	e->dotreclen = 0;
+	e->dotnundo0 = e->nundo;
+}
+
+static void
+dotrecsave(Eek *e)
+{
+	int i;
+
+	if (e == nil)
+		return;
+	if (e->nundo <= e->dotnundo0) {
+		e->dotrec = 0;
+		e->dotreclen = 0;
+		return;
+	}
+	e->dotlen = 0;
+	for (i = 0; i < e->dotreclen && i < (int)(sizeof e->dotbuf / sizeof e->dotbuf[0]); i++)
+		e->dotbuf[e->dotlen++] = e->dotrecbuf[i];
+	e->dotrec = 0;
+	e->dotreclen = 0;
+}
+
+static void
+dotreccancel(Eek *e)
+{
+	if (e == nil)
+		return;
+	e->dotrec = 0;
+	e->dotreclen = 0;
+}
+
+static void
+dotrecadd(Eek *e, const KeyEvent *ev)
+{
+	if (e == nil || ev == nil)
+		return;
+	if (!e->dotrec)
+		return;
+	if (e->dotreclen >= (int)(sizeof e->dotrecbuf / sizeof e->dotrecbuf[0])) {
+		dotreccancel(e);
+		setmsg(e, "dot buffer overflow");
+		return;
+	}
+	e->dotrecbuf[e->dotreclen++] = *ev;
+}
+
+static int
+mapset(Eek *e, unsigned modes, long lhs, const char *rhs)
+{
+	long i;
+	char *p;
+
+	if (e == nil || rhs == nil)
+		return -1;
+	if (lhs <= 0)
+		return -1;
+	if (*rhs == 0)
+		return -1;
+
+	for (i = 0; i < e->nmaps; i++) {
+		if (e->maps[i].lhs == lhs && e->maps[i].modes == modes) {
+			p = strdup(rhs);
+			if (p == nil)
+				return -1;
+			free(e->maps[i].rhs);
+			e->maps[i].rhs = p;
+			return 0;
+		}
+	}
+
+	if (e->nmaps + 1 > e->capmaps) {
+		long ncap;
+		void *np;
+
+		ncap = e->capmaps > 0 ? e->capmaps * 2 : 16;
+		np = realloc(e->maps, (size_t)ncap * sizeof e->maps[0]);
+		if (np == nil)
+			return -1;
+		e->maps = np;
+		e->capmaps = ncap;
+	}
+
+	p = strdup(rhs);
+	if (p == nil)
+		return -1;
+	e->maps[e->nmaps].modes = modes;
+	e->maps[e->nmaps].lhs = lhs;
+	e->maps[e->nmaps].rhs = p;
+	e->nmaps++;
+	return 0;
+}
+
+static int
+mapdel(Eek *e, unsigned modes, long lhs)
+{
+	long i;
+
+	if (e == nil)
+		return -1;
+	for (i = 0; i < e->nmaps; i++) {
+		if (e->maps[i].lhs == lhs && e->maps[i].modes == modes) {
+			free(e->maps[i].rhs);
+			memmove(&e->maps[i], &e->maps[i + 1], (size_t)(e->nmaps - i - 1) * sizeof e->maps[0]);
+			e->nmaps--;
+			return 0;
+		}
+	}
+	return -1;
+}
+
+static int
+mapapply(Eek *e, int mode, long lhs)
+{
+	unsigned bit;
+	long i;
+	const char *s;
+	long n;
+	long adv;
+	long r;
+	KeyEvent ev;
+
+	if (e == nil)
+		return 0;
+	if (mode < 0)
+		return 0;
+	bit = 1u << (unsigned)mode;
+	for (i = 0; i < e->nmaps; i++) {
+		if (e->maps[i].lhs != lhs)
+			continue;
+		if ((e->maps[i].modes & bit) == 0)
+			continue;
+
+		/* Inject rhs as non-remappable runes (push front, in reverse). */
+		s = e->maps[i].rhs;
+		n = (long)strlen(s);
+		/* Collect runes first so we can push in reverse order. */
+		{
+			long cap;
+			long *rv;
+			long nr;
+
+			cap = 64;
+			rv = malloc((size_t)cap * sizeof rv[0]);
+			if (rv == nil)
+				return 0;
+			nr = 0;
+			while (n > 0) {
+				r = utf8dec1(s, n, &adv);
+				if (adv <= 0)
+					break;
+				if (nr + 1 > cap) {
+					long ncap;
+					void *np;
+
+					ncap = cap * 2;
+					np = realloc(rv, (size_t)ncap * sizeof rv[0]);
+					if (np == nil) {
+						free(rv);
+						return 0;
+					}
+					rv = np;
+					cap = ncap;
+				}
+				rv[nr++] = r;
+				s += adv;
+				n -= adv;
+			}
+			while (nr > 0) {
+				nr--;
+				ev.k.kind = Keyrune;
+				ev.k.value = rv[nr];
+				ev.nomap = 1;
+				ev.src = Keysrcmap;
+				if (feedpushfront(e, &ev) < 0) {
+					free(rv);
+					setmsg(e, "map feed overflow");
+					return 1;
+				}
+			}
+			free(rv);
+		}
+		return 1;
+	}
+	return 0;
+}
+
+static void
+mapfreeall(Eek *e)
+{
+	long i;
+
+	if (e == nil)
+		return;
+	for (i = 0; i < e->nmaps; i++)
+		free(e->maps[i].rhs);
+	free(e->maps);
+	e->maps = nil;
+	e->nmaps = 0;
+	e->capmaps = 0;
+}
+
+static void
+argsfree(Args *a)
+{
+	if (a == nil)
+		return;
+	free(a->heap);
+	a->heap = nil;
+	a->heapcap = 0;
+	a->n = 0;
+}
+
+static int
+argspush(Args *a, long v)
+{
+	long *p;
+	int cap;
+
+	if (a == nil)
+		return -1;
+	if (a->n < (int)(sizeof a->v / sizeof a->v[0])) {
+		a->v[a->n++] = v;
+		return 0;
+	}
+	cap = a->heapcap > 0 ? a->heapcap : 16;
+	while (cap < a->n - (int)(sizeof a->v / sizeof a->v[0]) + 1) {
+		if (cap > 1<<20)
+			break;
+		cap *= 2;
+	}
+	if (cap < a->n - (int)(sizeof a->v / sizeof a->v[0]) + 1)
+		return -1;
+	p = realloc(a->heap, (size_t)cap * sizeof a->heap[0]);
+	if (p == nil)
+		return -1;
+	a->heap = p;
+	a->heapcap = cap;
+	a->heap[a->n - (int)(sizeof a->v / sizeof a->v[0])] = v;
+	a->n++;
+	return 0;
+}
+
+static long
+argsat(const Args *a, int i, long def)
+{
+	int base;
+	int hi;
+
+	if (a == nil)
+		return def;
+	if (i < 0)
+		return def;
+	if (i >= a->n)
+		return def;
+	hi = (int)(sizeof a->v / sizeof a->v[0]);
+	if (i < hi)
+		return a->v[i];
+	base = hi;
+	if (a->heap == nil)
+		return def;
+	return a->heap[i - base];
+}
+
+static int
+movematch(const Move *m, int mode, const Key *k)
+{
+	if (m == nil || k == nil)
+		return 0;
+	if ((m->modes & (1u << (unsigned)mode)) == 0)
+		return 0;
+	if (m->kind != k->kind)
+		return 0;
+	if (m->kind == Keyrune) {
+		if (m->value == -1)
+			return 1;
+		return m->value == k->value;
+	}
+	return 1;
+}
+
+static int
+movedispatch(Eek *e, int mode, const Move *moves, long nmoves, const Key *k, Args *a)
+{
+	long i;
+
+	if (moves == nil || nmoves <= 0)
+		return 0;
+	for (i = 0; i < nmoves; i++) {
+		if (!movematch(&moves[i], mode, k))
+			continue;
+		if (moves[i].fn == nil)
+			return 1;
+		(void)moves[i].fn(e, a);
+		return 1;
+	}
+	return 0;
+}
 
 /*
  * findfwd moves the cursor to the next occurrence of rune r on the current
@@ -2523,6 +3211,8 @@ nextutf8(Eek *e, long y, long at)
 	return at + n;
 }
 
+static int isws(long c);
+
 /*
  * isword reports whether c is considered a "word" character for word motions.
  *
@@ -2539,11 +3229,17 @@ isword(long c)
 		return 0;
 	if (c > 0x7f)
 		return 1;
-	if (c == ' ' || c == '\t' || c == '\n' || c == '\r')
+	if (isws(c))
 		return 0;
-	if (c == '.' || c == ',' || c == ':' || c == ';' || c == '(' || c == ')' || c == '[' || c == ']' || c == '{' || c == '}' || c == '<' || c == '>' || c == '"' || c == '\'' || c == '!')
-		return 0;
-	return 1;
+	if (c == '_')
+		return 1;
+	if (c >= '0' && c <= '9')
+		return 1;
+	if (c >= 'A' && c <= 'Z')
+		return 1;
+	if (c >= 'a' && c <= 'z')
+		return 1;
+	return 0;
 }
 
 /*
@@ -3833,6 +4529,7 @@ cmdexec(Eek *e)
 	char *p, *arg;
 	int force;
 	char *end;
+	unsigned mapmodes;
 
 	memset(cmd, 0, sizeof cmd);
 	memcpy(cmd, e->cmd, (size_t)e->cmdn);
@@ -3857,6 +4554,8 @@ cmdexec(Eek *e)
 		arg[-1] = 0;
 		force = 1;
 	}
+
+	mapmodes = (1u << Modenormal) | (1u << Modevisual);
 
 	if (strcmp(p, "set") == 0 || strcmp(p, "se") == 0) {
 		char *s;
@@ -3890,6 +4589,83 @@ cmdexec(Eek *e)
 			setmsg(e, "%s %s %s", e->linenumbers ? "numbers" : "nonumbers",
 				e->relativenumbers ? "relativenumbers" : "norelativenumbers",
 				e->synenabled ? "syntax" : "nosyntax");
+		return 0;
+	}
+
+	if (strcmp(p, "map") == 0) {
+		char *s;
+		char *lhs;
+		char *rhs;
+		long adv;
+		long r;
+		long n;
+
+		if (arg == nil || *arg == 0) {
+			setmsg(e, "Usage: map <lhs> <rhs>");
+			return -1;
+		}
+		s = arg;
+		while (*s == ' ' || *s == '\t')
+			s++;
+		lhs = s;
+		while (*s && *s != ' ' && *s != '\t')
+			s++;
+		if (*s)
+			*s++ = 0;
+		while (*s == ' ' || *s == '\t')
+			s++;
+		rhs = s;
+		if (lhs == nil || *lhs == 0 || rhs == nil || *rhs == 0) {
+			setmsg(e, "Usage: map <lhs> <rhs>");
+			return -1;
+		}
+		n = (long)strlen(lhs);
+		r = utf8dec1(lhs, n, &adv);
+		if (adv <= 0 || adv != n) {
+			setmsg(e, "map lhs must be a single character");
+			return -1;
+		}
+		if (mapset(e, mapmodes, r, rhs) < 0) {
+			setmsg(e, "Cannot set map");
+			return -1;
+		}
+		setmsg(e, "mapped");
+		return 0;
+	}
+
+	if (strcmp(p, "unmap") == 0) {
+		char *s;
+		char *lhs;
+		long adv;
+		long r;
+		long n;
+
+		if (arg == nil || *arg == 0) {
+			setmsg(e, "Usage: unmap <lhs>");
+			return -1;
+		}
+		s = arg;
+		while (*s == ' ' || *s == '\t')
+			s++;
+		lhs = s;
+		while (*s && *s != ' ' && *s != '\t')
+			s++;
+		*s = 0;
+		if (lhs == nil || *lhs == 0) {
+			setmsg(e, "Usage: unmap <lhs>");
+			return -1;
+		}
+		n = (long)strlen(lhs);
+		r = utf8dec1(lhs, n, &adv);
+		if (adv <= 0 || adv != n) {
+			setmsg(e, "unmap lhs must be a single character");
+			return -1;
+		}
+		if (mapdel(e, mapmodes, r) < 0) {
+			setmsg(e, "not mapped");
+			return -1;
+		}
+		setmsg(e, "unmapped");
 		return 0;
 	}
 
@@ -5391,6 +6167,1476 @@ openlineabove(Eek *e)
 	return 0;
 }
 
+static int
+cmdesc(Eek *e, Args *a)
+{
+	(void)a;
+	if (e == nil)
+		return 0;
+	if (e->cmdkeepvisual)
+		setmode(e, Modevisual);
+	else
+		setmode(e, Modenormal);
+	e->cmdrange = 0;
+	e->cmdkeepvisual = 0;
+	cmdclear(e);
+	e->cmdprefix = ':';
+	return 0;
+}
+
+static int
+cmdenter(Eek *e, Args *a)
+{
+	(void)a;
+	if (e == nil)
+		return 0;
+	if (e->cmdprefix == '/')
+		(void)searchexec(e);
+	else
+		(void)cmdexec(e);
+	e->cmdrange = 0;
+	e->cmdkeepvisual = 0;
+	setmode(e, Modenormal);
+	cmdclear(e);
+	e->cmdprefix = ':';
+	return 0;
+}
+
+static int
+cmdbs(Eek *e, Args *a)
+{
+	(void)a;
+	if (e == nil)
+		return 0;
+	if (e->cmdn > 0)
+		e->cmdn--;
+	return 0;
+}
+
+static int
+cmdrune(Eek *e, Args *a)
+{
+	long r;
+
+	if (e == nil)
+		return 0;
+	r = argsat(a, 0, 0);
+	if (r == '\n')
+		return cmdenter(e, a);
+	if (r >= 0x20 && r < 0x7f) {
+		if (e->cmdn + 1 < (long)sizeof e->cmd)
+			e->cmd[e->cmdn++] = (char)r;
+	}
+	return 0;
+}
+
+static const Move cmdkeys[] = {
+	{ 1u << Modecmd, Keyesc, 0, "<Esc>", cmdesc },
+	{ 1u << Modecmd, Keyenter, 0, "<Enter>", cmdenter },
+	{ 1u << Modecmd, Keybackspace, 0, "<BS>", cmdbs },
+	{ 1u << Modecmd, Keyrune, -1, "{c}", cmdrune },
+};
+
+static int
+cmdkey(Eek *e, const Key *k)
+{
+	Args a;
+
+	if (e == nil || k == nil)
+		return 0;
+	argsinit(&a);
+	if (k->kind == Keyrune)
+		(void)argspush(&a, k->value);
+	(void)movedispatch(e, Modecmd, cmdkeys, (long)(sizeof cmdkeys / sizeof cmdkeys[0]), k, &a);
+	argsfree(&a);
+	return 1;
+}
+
+static int
+insesc(Eek *e, Args *a)
+{
+	(void)a;
+	if (e == nil)
+		return 0;
+	if (e->cx > 0)
+		e->cx = prevutf8(e, e->cy, e->cx);
+	setmode(e, Modenormal);
+	e->undopending = 0;
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	e->count = 0;
+	e->opcount = 0;
+	e->dpending = 0;
+	e->cpending = 0;
+	e->ypending = 0;
+	e->cmdrange = 0;
+	e->fcount = 0;
+	e->fpending = 0;
+	e->tipending = 0;
+	e->vtipending = 0;
+	normalfixcursor(e);
+	return 0;
+}
+
+static int
+insleft(Eek *e, Args *a)
+{
+	(void)a;
+	movel(e);
+	return 0;
+}
+
+static int
+insright(Eek *e, Args *a)
+{
+	(void)a;
+	mover(e);
+	return 0;
+}
+
+static int
+insup(Eek *e, Args *a)
+{
+	(void)a;
+	moveu(e);
+	return 0;
+}
+
+static int
+insdown(Eek *e, Args *a)
+{
+	(void)a;
+	moved(e);
+	return 0;
+}
+
+static int
+insbs(Eek *e, Args *a)
+{
+	(void)a;
+	(void)delback(e);
+	return 0;
+}
+
+static int
+insenter(Eek *e, Args *a)
+{
+	(void)a;
+	(void)insertnl(e);
+	return 0;
+}
+
+static int
+insrune(Eek *e, Args *a)
+{
+	char s[8];
+	long n;
+	long r;
+
+	if (e == nil)
+		return 0;
+	r = argsat(a, 0, 0);
+	if (r == '\n') {
+		(void)insertnl(e);
+		return 0;
+	}
+	if (r == '\t') {
+		s[0] = '\t';
+		(void)insertbytes(e, s, 1);
+		return 0;
+	}
+	if (r < 0x20)
+		return 0;
+	n = utf8enc(r, s);
+	(void)insertbytes(e, s, n);
+	return 0;
+}
+
+static const Move inskeys[] = {
+	{ 1u << Modeinsert, Keyesc, 0, "<Esc>", insesc },
+	{ 1u << Modeinsert, Keyleft, 0, "<Left>", insleft },
+	{ 1u << Modeinsert, Keyright, 0, "<Right>", insright },
+	{ 1u << Modeinsert, Keyup, 0, "<Up>", insup },
+	{ 1u << Modeinsert, Keydown, 0, "<Down>", insdown },
+	{ 1u << Modeinsert, Keybackspace, 0, "<BS>", insbs },
+	{ 1u << Modeinsert, Keyenter, 0, "<Enter>", insenter },
+	{ 1u << Modeinsert, Keyrune, -1, "{c}", insrune },
+};
+
+static int
+inskey(Eek *e, const Key *k)
+{
+	Args a;
+
+	if (e == nil || k == nil)
+		return 0;
+	argsinit(&a);
+	if (k->kind == Keyrune)
+		(void)argspush(&a, k->value);
+	(void)movedispatch(e, Modeinsert, inskeys, (long)(sizeof inskeys / sizeof inskeys[0]), k, &a);
+	argsfree(&a);
+	return 1;
+}
+
+/* NORMAL/VISUAL move implementations (table-driven). */
+static int
+quit(Eek *e, Args *a)
+{
+	(void)a;
+	e->quit = 1;
+	return 0;
+}
+
+static int
+undo(Eek *e, Args *a)
+{
+	(void)a;
+	undopop(e);
+	e->count = 0;
+	e->opcount = 0;
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	return 0;
+}
+
+static int
+searchnext(Eek *e, Args *a)
+{
+	(void)a;
+	if (e->lastsearch == nil || e->lastsearch[0] == 0) {
+		setmsg(e, "No previous search");
+		return 0;
+	}
+	if (searchforward(e, e->lastsearch) < 0)
+		setmsg(e, "Pattern not found: %s", e->lastsearch);
+	e->count = 0;
+	e->opcount = 0;
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	return 0;
+}
+
+static int
+searchprev(Eek *e, Args *a)
+{
+	(void)a;
+	if (e->lastsearch == nil || e->lastsearch[0] == 0) {
+		setmsg(e, "No previous search");
+		return 0;
+	}
+	if (searchbackward(e, e->lastsearch) < 0)
+		setmsg(e, "Pattern not found: %s", e->lastsearch);
+	e->count = 0;
+	e->opcount = 0;
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	return 0;
+}
+
+static int
+vistoggle(Eek *e, Args *a)
+{
+	(void)a;
+	if (e->mode == Modevisual) {
+		e->dpending = 0;
+		e->cpending = 0;
+		e->ypending = 0;
+		e->fpending = 0;
+		e->fcount = 0;
+		e->tipending = 0;
+		e->vtipending = 0;
+		setmode(e, Modenormal);
+	} else {
+		e->dpending = 0;
+		e->cpending = 0;
+		e->ypending = 0;
+		e->fpending = 0;
+		e->fcount = 0;
+		e->tipending = 0;
+		e->vay = e->cy;
+		e->vax = e->cx;
+		e->vtipending = 0;
+		setmode(e, Modevisual);
+	}
+	e->count = 0;
+	e->opcount = 0;
+	return 0;
+}
+
+static int
+visline(Eek *e, Args *a)
+{
+	(void)a;
+	if (e == nil)
+		return 0;
+
+	/* Clear any operator-pending state and select the entire current line. */
+	e->dpending = 0;
+	e->cpending = 0;
+	e->ypending = 0;
+	e->fpending = 0;
+	e->fcount = 0;
+	e->rpending = 0;
+	e->rcount = 0;
+	e->tipending = 0;
+	e->vtipending = 0;
+
+	e->vay = e->cy;
+	e->vax = 0;
+	e->cx = linelen(e, e->cy);
+	setmode(e, Modevisual);
+
+	e->count = 0;
+	e->opcount = 0;
+	return 0;
+}
+
+static int
+exline(Eek *e, Args *a)
+{
+	int wasvisual;
+
+	(void)a;
+	wasvisual = (e->mode == Modevisual);
+	setmode(e, Modecmd);
+	cmdclear(e);
+	e->cmdprefix = ':';
+	e->cmdkeepvisual = wasvisual;
+	if (wasvisual) {
+		vsellines(e, &e->cmdy0, &e->cmdy1);
+		e->cmdrange = 1;
+	} else {
+		e->cmdrange = 0;
+	}
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	e->count = 0;
+	e->opcount = 0;
+	return 0;
+}
+
+static int
+searchline(Eek *e, Args *a)
+{
+	(void)a;
+	setmode(e, Modecmd);
+	cmdclear(e);
+	e->cmdprefix = '/';
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	e->count = 0;
+	e->opcount = 0;
+	return 0;
+}
+
+static int
+opdel(Eek *e, Args *a)
+{
+	(void)a;
+	e->opcount = countval(e->count);
+	e->count = 0;
+	e->dpending = 1;
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	return 0;
+}
+
+static int
+opchg(Eek *e, Args *a)
+{
+	(void)a;
+	e->opcount = countval(e->count);
+	e->count = 0;
+	e->cpending = 1;
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	return 0;
+}
+
+static int
+opyank(Eek *e, Args *a)
+{
+	(void)a;
+	e->opcount = countval(e->count);
+	e->count = 0;
+	e->ypending = 1;
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	return 0;
+}
+
+static int
+findbegin(Eek *e, Args *a)
+{
+	long mode;
+
+	mode = argsat(a, 0, 0);
+	e->fpending = 1;
+	e->fcount = countval(e->count);
+	e->fmode = mode;
+	e->fop = 0;
+	e->count = 0;
+	e->opcount = 0;
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	return 0;
+}
+
+static int
+paste(Eek *e, Args *a)
+{
+	(void)a;
+	if (e->yline)
+		(void)pastelinewise(e, 0);
+	else
+		(void)pastecharwise(e, 0);
+	e->count = 0;
+	return 0;
+}
+
+static int
+pastebefore(Eek *e, Args *a)
+{
+	(void)a;
+	if (e->yline)
+		(void)pastelinewise(e, 1);
+	else
+		(void)pastecharwise(e, 1);
+	e->count = 0;
+	return 0;
+}
+
+static int
+chgend(Eek *e, Args *a)
+{
+	Line *l;
+	long len;
+	long nlines;
+	long i;
+
+	(void)a;
+	nlines = countval(e->count);
+	e->count = 0;
+	if (undopush(e) < 0)
+		return 0;
+	l = bufgetline(&e->b, e->cy);
+	if (l != nil) {
+		len = l->n;
+		if (e->cx < len)
+			(void)yset(e, l->s + e->cx, len - e->cx, 0);
+		else
+			yclear(e);
+		if (e->cx < len)
+			(void)linedelrange(l, e->cx, len - e->cx);
+	}
+	for (i = 1; i < nlines; i++) {
+		Line *nl;
+		char nlsep;
+
+		nl = bufgetline(&e->b, e->cy + 1);
+		if (nl == nil)
+			break;
+		nlsep = '\n';
+		(void)yappend(e, &nlsep, 1);
+		if (nl->n > 0)
+			(void)yappend(e, nl->s, nl->n);
+		(void)bufdelline(&e->b, e->cy + 1);
+	}
+	e->dirty = 1;
+	setmode(e, Modeinsert);
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	return 0;
+}
+
+static int
+insafter(Eek *e, Args *a)
+{
+	(void)a;
+	e->cx = nextutf8(e, e->cy, e->cx);
+	setmode(e, Modeinsert);
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	e->count = 0;
+	e->opcount = 0;
+	return 0;
+}
+
+static int
+insend(Eek *e, Args *a)
+{
+	(void)a;
+	e->cx = linelen(e, e->cy);
+	setmode(e, Modeinsert);
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	e->count = 0;
+	e->opcount = 0;
+	return 0;
+}
+
+static int
+openbelow(Eek *e, Args *a)
+{
+	(void)a;
+	(void)openlinebelow(e);
+	e->lastnormalrune = 0;
+	return 0;
+}
+
+static int
+openabove(Eek *e, Args *a)
+{
+	(void)a;
+	(void)openlineabove(e);
+	e->lastnormalrune = 0;
+	return 0;
+}
+
+static int
+curleft(Eek *e, Args *a)
+{
+	(void)a;
+	repeat(e, movel, countval(e->count));
+	e->count = 0;
+	return 0;
+}
+
+static int
+curdown(Eek *e, Args *a)
+{
+	(void)a;
+	repeat(e, moved, countval(e->count));
+	e->count = 0;
+	return 0;
+}
+
+static int
+curup(Eek *e, Args *a)
+{
+	(void)a;
+	repeat(e, moveu, countval(e->count));
+	e->count = 0;
+	return 0;
+}
+
+static int
+curright(Eek *e, Args *a)
+{
+	(void)a;
+	repeat(e, mover, countval(e->count));
+	e->count = 0;
+	return 0;
+}
+
+static int
+page(Eek *e, Args *a)
+{
+	long r;
+	long npage;
+	long rows;
+	long delta;
+
+	r = argsat(a, 0, 0);
+	npage = countval(e->count);
+	rows = curwinrows(e);
+	delta = rows * npage;
+	if (r == '(')
+		delta = -delta;
+	e->cy = clamp(e->cy + delta, 0, e->b.nline > 0 ? e->b.nline - 1 : 0);
+	e->rowoff = e->rowoff + delta;
+	if (e->rowoff < 0)
+		e->rowoff = 0;
+	e->count = 0;
+	e->opcount = 0;
+	return 0;
+}
+
+static int
+bol(Eek *e, Args *a)
+{
+	(void)a;
+	e->cx = 0;
+	return 0;
+}
+
+static int
+eol(Eek *e, Args *a)
+{
+	(void)a;
+	e->cx = linelen(e, e->cy);
+	return 0;
+}
+
+static int
+wordnext(Eek *e, Args *a)
+{
+	(void)a;
+	repeat(e, movew, countval(e->count));
+	e->count = 0;
+	return 0;
+}
+
+static int
+wordprev(Eek *e, Args *a)
+{
+	(void)a;
+	repeat(e, moveb, countval(e->count));
+	e->count = 0;
+	return 0;
+}
+
+static int
+insbefore(Eek *e, Args *a)
+{
+	(void)a;
+	setmode(e, Modeinsert);
+	e->count = 0;
+	e->opcount = 0;
+	return 0;
+}
+
+static int
+delchar(Eek *e, Args *a)
+{
+	(void)a;
+	(void)delat_yank(e, countval(e->count));
+	e->count = 0;
+	return 0;
+}
+
+static int
+gotoline(Eek *e, Args *a)
+{
+	(void)a;
+	if (e->count > 0)
+		e->cy = clamp(e->count - 1, 0, e->b.nline - 1);
+	else
+		e->cy = e->b.nline - 1;
+	e->cx = 0;
+	e->count = 0;
+	e->opcount = 0;
+	return 0;
+}
+
+static int
+gprefix(Eek *e, Args *a)
+{
+	(void)a;
+	e->lastnormalrune = 'g';
+	e->seqcount = e->count;
+	e->count = 0;
+	return 0;
+}
+
+static int
+leader(Eek *e, Args *a)
+{
+	(void)a;
+	e->lastnormalrune = ' ';
+	e->seqcount = 0;
+	e->count = 0;
+	e->opcount = 0;
+	return 0;
+}
+
+static int
+ctrlw(Eek *e, Args *a)
+{
+	(void)a;
+	e->lastnormalrune = 0x17;
+	e->count = 0;
+	e->opcount = 0;
+	return 0;
+}
+
+static int
+findagain(Eek *e, Args *a)
+{
+	long n;
+	long mode;
+	long r;
+	long pos;
+	long posend;
+	long origcx;
+	long len;
+
+	(void)a;
+	if (e == nil)
+		return 0;
+	if (e->lastfindmode == 0 || e->lastfindr == 0) {
+		setmsg(e, "No previous find");
+		e->count = 0;
+		e->opcount = 0;
+		return 0;
+	}
+	n = countval(e->count);
+	e->count = 0;
+	e->opcount = 0;
+	if (n < 1)
+		n = 1;
+
+	mode = e->lastfindmode;
+	r = e->lastfindr;
+	origcx = e->cx;
+	len = linelen(e, e->cy);
+	pos = -1;
+	switch (mode) {
+	case 'f':
+	case 't':
+		if (findfwd(e, r, n) < 0)
+			pos = -1;
+		else
+			pos = e->cx;
+		break;
+	case 'F':
+	case 'T':
+		if (findbwd(e, r, n) < 0)
+			pos = -1;
+		else
+			pos = e->cx;
+		break;
+	default:
+		pos = -1;
+		break;
+	}
+	if (pos < 0) {
+		setmsg(e, "Not found: %lc", (long)r);
+		e->cx = origcx;
+		return 0;
+	}
+	posend = nextutf8(e, e->cy, pos);
+	if (mode == 't')
+		e->cx = prevutf8(e, e->cy, pos);
+	else if (mode == 'T')
+		e->cx = posend;
+	else
+		e->cx = pos;
+	if (e->cx > len)
+		e->cx = len;
+	return 0;
+}
+
+static int
+findagainrev(Eek *e, Args *a)
+{
+	long mode;
+
+	(void)a;
+	if (e == nil)
+		return 0;
+	mode = e->lastfindmode;
+	if (mode == 'f')
+		e->lastfindmode = 'F';
+	else if (mode == 'F')
+		e->lastfindmode = 'f';
+	else if (mode == 't')
+		e->lastfindmode = 'T';
+	else if (mode == 'T')
+		e->lastfindmode = 't';
+	(void)findagain(e, a);
+	/* restore original mode for subsequent ';' */
+	e->lastfindmode = mode;
+	return 0;
+}
+
+static int
+dotrepeat(Eek *e, Args *a)
+{
+	long n;
+	long i;
+	int j;
+	KeyEvent ev;
+
+	(void)a;
+	if (e == nil)
+		return 0;
+	if (e->dotlen <= 0) {
+		setmsg(e, "No previous change");
+		e->count = 0;
+		e->opcount = 0;
+		return 0;
+	}
+	n = countval(e->count);
+	e->count = 0;
+	e->opcount = 0;
+	if (n < 1)
+		n = 1;
+
+	for (i = 0; i < n; i++) {
+		for (j = e->dotlen - 1; j >= 0; j--) {
+			ev = e->dotbuf[j];
+			ev.nomap = 1;
+			ev.src = Keysrcdot;
+			if (feedpushfront(e, &ev) < 0) {
+				setmsg(e, "dot feed overflow");
+				return 0;
+			}
+		}
+		e->dotreplayleft += e->dotlen;
+	}
+	return 0;
+}
+
+static const Move nvkeys[] = {
+	/* motion */
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'h', "{n}h", curleft },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'j', "{n}j", curdown },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'k', "{n}k", curup },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'l', "{n}l", curright },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, '(', "{n}<PgUp>", page },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, ')', "{n}<PgDn>", page },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, '0', "0", bol },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, '$', "$", eol },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'w', "{n}w", wordnext },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'b', "{n}b", wordprev },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'G', "{n}G", gotoline },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'g', "gf", gprefix },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'f', "f{c}", findbegin },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'F', "F{c}", findbegin },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 't', "t{c}", findbegin },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'T', "T{c}", findbegin },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, ';', ";", findagain },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, ',', ",", findagainrev },
+
+	/* mode */
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'v', "v", vistoggle },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'V', "V", visline },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, ':', ":", exline },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, '/', "/", searchline },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'i', "i", insbefore },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'a', "a", insafter },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'A', "A", insend },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'o', "o", openbelow },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'O', "O", openabove },
+
+	/* operators */
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'd', "d{n}f", opdel },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'c', "c{n}f", opchg },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'y', "y{n}f", opyank },
+
+	/* edits */
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'x', "{n}x", delchar },
+	{ 1u << Modenormal, Keyrune, 's', "{n}s", subchar },
+	{ 1u << Modenormal, Keyrune, 'r', "r{c}", replbegin },
+	{ 1u << Modenormal, Keyrune, 'D', "{n}D", delend },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'C', "C", chgend },
+	{ 1u << Modenormal, Keyrune, 'S', "{n}S", sublinecmd },
+
+	/* paste */
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'p', "p", paste },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'P', "P", pastebefore },
+
+	/* search */
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'n', "n", searchnext },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'N', "N", searchprev },
+
+	/* meta */
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'u', "u", undo },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, '.', ".", dotrepeat },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'q', "q", quit },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, ' ', " <leader>", leader },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 0x17, "<C-w>", ctrlw },
+};
+
+static int
+nvkey(Eek *e, const Key *k)
+{
+	Args a;
+	long r;
+	int did;
+	int dir;
+	int handled;
+
+	if (e == nil || k == nil)
+		return 0;
+
+	/* Ctrl+hjkl window navigation: keep as a hard override for now. */
+	if (nwins(e->layout) > 1) {
+		did = 0;
+		dir = -1;
+		if (k->kind == Keybackspace) {
+			/* Many terminals send DEL for Ctrl-H / Backspace. */
+			did = 1;
+			dir = Dirleft;
+		}
+		if (k->kind == Keyrune) {
+			if (k->value == 0x08) { did = 1; dir = Dirleft; }
+			else if (k->value == '\n') { did = 1; dir = Dirdown; }
+			else if (k->value == 0x0b) { did = 1; dir = Dirup; }
+			else if (k->value == 0x0c) { did = 1; dir = Dirright; }
+		}
+		if (did && dir >= 0) {
+			(void)focusdir(e, dir);
+			e->dpending = 0;
+			e->cpending = 0;
+			e->ypending = 0;
+			e->fpending = 0;
+			e->fcount = 0;
+			e->rpending = 0;
+			e->rcount = 0;
+			e->tipending = 0;
+			e->vtipending = 0;
+			e->lastnormalrune = 0;
+			e->lastmotioncount = 0;
+			e->seqcount = 0;
+			e->count = 0;
+			e->opcount = 0;
+			return 1;
+		}
+	}
+
+	/* ESC cancels pending operators / exits visual like before. */
+	if (k->kind == Keyesc) {
+		e->dpending = 0;
+		e->cpending = 0;
+		e->ypending = 0;
+		e->fpending = 0;
+		e->fcount = 0;
+		e->rpending = 0;
+		e->rcount = 0;
+		e->tipending = 0;
+		e->vtipending = 0;
+		e->lastnormalrune = 0;
+		e->lastmotioncount = 0;
+		e->seqcount = 0;
+		e->count = 0;
+		e->opcount = 0;
+		if (e->mode == Modevisual)
+			setmode(e, Modenormal);
+		return 1;
+	}
+
+	if (e->rpending) {
+		e->rpending = 0;
+		if (k->kind == Keyrune) {
+			long rr;
+			long n;
+
+			rr = k->value;
+			n = e->rcount;
+			e->rcount = 0;
+			if (rr == '\n' || rr == '\r')
+				goto repldone;
+			if (rr == '\t')
+				replchars(e, rr, n);
+			else if (rr >= 0x20)
+				replchars(e, rr, n);
+		}
+	repldone:
+		e->count = 0;
+		e->opcount = 0;
+		e->lastnormalrune = 0;
+		e->lastmotioncount = 0;
+		e->seqcount = 0;
+		if (e->mode == Modenormal)
+			normalfixcursor(e);
+		return 1;
+	}
+
+	if (e->fpending) {
+		e->fpending = 0;
+		if (k->kind == Keyrune) {
+			long n;
+			long mode;
+			long op;
+			long origcx;
+			long pos;
+			long posend;
+			long curend;
+			long x0, x1;
+
+			n = e->fcount;
+			mode = e->fmode;
+			op = e->fop;
+			e->fcount = 0;
+			e->fmode = 0;
+			e->fop = 0;
+
+			origcx = e->cx;
+			pos = -1;
+			switch (mode) {
+			case 'f':
+			case 't':
+				if (findfwd(e, k->value, n) < 0)
+					pos = -1;
+				else
+					pos = e->cx;
+				break;
+			case 'F':
+			case 'T':
+				if (findbwd(e, k->value, n) < 0)
+					pos = -1;
+				else
+					pos = e->cx;
+				break;
+			default:
+				pos = -1;
+				break;
+			}
+
+			if (pos < 0) {
+				setmsg(e, "Not found: %lc", (long)k->value);
+				e->cx = origcx;
+				goto finddone;
+			}
+			e->lastfindmode = mode;
+			e->lastfindr = k->value;
+			posend = nextutf8(e, e->cy, pos);
+			curend = nextutf8(e, e->cy, origcx);
+
+			if (op == 0) {
+				switch (mode) {
+				case 'f':
+				case 'F':
+					e->cx = pos;
+					break;
+				case 't':
+					e->cx = prevutf8(e, e->cy, pos);
+					break;
+				case 'T':
+					e->cx = posend;
+					break;
+				default:
+					e->cx = origcx;
+					break;
+				}
+			} else {
+				/* Operator-pending applies to current line only. */
+				e->cx = origcx;
+				x0 = origcx;
+				x1 = origcx;
+				switch (mode) {
+				case 'f': /* through */
+					x0 = origcx;
+					x1 = posend;
+					break;
+				case 't': /* until */
+					x0 = origcx;
+					x1 = pos;
+					break;
+				case 'F': /* backward through */
+					x0 = pos;
+					x1 = curend;
+					break;
+				case 'T': /* backward until */
+					x0 = posend;
+					x1 = curend;
+					break;
+				default:
+					break;
+				}
+				if (x0 != x1) {
+					if (op == 'y') {
+						(void)yankrange(e, e->cy, x0, e->cy, x1);
+						/* Preserve cursor. */
+						e->cx = origcx;
+					} else {
+						(void)delrange(e, e->cy, x0, e->cy, x1, 1);
+						if (op == 'c')
+							setmode(e, Modeinsert);
+					}
+				}
+			}
+		finddone:
+			;
+		}
+		e->lastnormalrune = 0;
+		e->lastmotioncount = 0;
+		e->seqcount = 0;
+		e->count = 0;
+		e->opcount = 0;
+		return 1;
+	}
+
+	if (e->dpending) {
+		if (k->kind == Keyrune && k->value >= '0' && k->value <= '9') {
+			if (e->count > 0 || k->value != '0') {
+				e->count = e->count * 10 + (k->value - '0');
+				return 1;
+			}
+		}
+
+		e->dpending = 0;
+		if (k->kind == Keyrune) {
+			long total;
+
+			total = countval(e->opcount) * countval(e->count);
+			e->opcount = 0;
+			e->count = 0;
+			switch (k->value) {
+			case 'd':
+				(void)dellines(e, total);
+				break;
+			case 'i':
+				e->tipending = 1;
+				e->tiop = 'd';
+				e->opcount = total;
+				return 1;
+			case 'w':
+				(void)delwords(e, total);
+				break;
+			case 'e':
+				(void)delendwords(e, total);
+				break;
+			case 'f':
+			case 't':
+			case 'F':
+			case 'T':
+				e->fpending = 1;
+				e->fcount = total;
+				e->fmode = k->value;
+				e->fop = 'd';
+				return 1;
+			default:
+				setmsg(e, "Unknown d%lc", (long)k->value);
+				break;
+			}
+		}
+		if (e->mode == Modenormal)
+			normalfixcursor(e);
+		e->lastnormalrune = 0;
+		e->lastmotioncount = 0;
+		e->seqcount = 0;
+		return 1;
+	}
+
+	if (e->tipending) {
+		e->tipending = 0;
+		if (k->kind == Keyrune)
+			(void)delinside(e, e->tiop, k->value);
+		e->tiop = 0;
+		e->opcount = 0;
+		e->count = 0;
+		e->lastnormalrune = 0;
+		e->lastmotioncount = 0;
+		e->seqcount = 0;
+		return 1;
+	}
+
+	if (e->ypending) {
+		if (k->kind == Keyrune && k->value >= '0' && k->value <= '9') {
+			if (e->count > 0 || k->value != '0') {
+				e->count = e->count * 10 + (k->value - '0');
+				return 1;
+			}
+		}
+
+		e->ypending = 0;
+		if (k->kind == Keyrune) {
+			long total;
+			long sy, sx;
+			long ty, tx;
+
+			total = countval(e->opcount) * countval(e->count);
+			e->opcount = 0;
+			e->count = 0;
+			sy = e->cy;
+			sx = e->cx;
+
+			switch (k->value) {
+			case 'y':
+				(void)yanklines(e, e->cy, total);
+				break;
+			case 'w':
+				{
+					long i;
+					long cy, cx;
+
+					cy = sy;
+					cx = sx;
+					for (i = 0; i < total; i++) {
+						e->cy = cy;
+						e->cx = cx;
+						wordtarget(e, &ty, &tx);
+						if (ty == cy && tx <= cx)
+							break;
+						cy = ty;
+						cx = tx;
+					}
+					e->cy = sy;
+					e->cx = sx;
+					(void)yankrange(e, sy, sx, cy, cx);
+				}
+				break;
+			case 'e':
+				endwordtarget(e, &ty, &tx);
+				(void)yankrange(e, e->cy, e->cx, e->cy, tx);
+				break;
+			case '$': {
+				long len;
+
+				len = linelen(e, e->cy);
+				(void)yankrange(e, e->cy, e->cx, e->cy, len);
+				break;
+			}
+			case 'f':
+			case 't':
+			case 'F':
+			case 'T':
+				e->fpending = 1;
+				e->fcount = total;
+				e->fmode = k->value;
+				e->fop = 'y';
+				return 1;
+			default:
+				setmsg(e, "Unknown y%lc", (long)k->value);
+				break;
+			}
+			e->cy = sy;
+			e->cx = sx;
+		}
+		e->lastnormalrune = 0;
+		e->lastmotioncount = 0;
+		e->seqcount = 0;
+		return 1;
+	}
+
+	if (e->cpending) {
+		if (k->kind == Keyrune && k->value >= '0' && k->value <= '9') {
+			if (e->count > 0 || k->value != '0') {
+				e->count = e->count * 10 + (k->value - '0');
+				return 1;
+			}
+		}
+
+		e->cpending = 0;
+		if (k->kind == Keyrune) {
+			long total;
+
+			total = countval(e->opcount) * countval(e->count);
+			e->opcount = 0;
+			e->count = 0;
+			switch (k->value) {
+			case 'w':
+				(void)delwords(e, total);
+				setmode(e, Modeinsert);
+				break;
+			case 'f':
+			case 't':
+			case 'F':
+			case 'T':
+				e->fpending = 1;
+				e->fcount = total;
+				e->fmode = k->value;
+				e->fop = 'c';
+				return 1;
+			case 'i':
+				e->tipending = 1;
+				e->tiop = 'c';
+				e->opcount = total;
+				return 1;
+			default:
+				setmsg(e, "Unknown c%lc", (long)k->value);
+				break;
+			}
+		}
+		if (e->mode == Modenormal)
+			normalfixcursor(e);
+		e->lastnormalrune = 0;
+		e->lastmotioncount = 0;
+		e->seqcount = 0;
+		return 1;
+	}
+
+	/* Arrow key motions work regardless of counts. */
+	if (k->kind == Keyup) { moveu(e); return 1; }
+	if (k->kind == Keydown) { moved(e); return 1; }
+	if (k->kind == Keyleft) { movel(e); return 1; }
+	if (k->kind == Keyright) { mover(e); return 1; }
+
+	if (k->kind != Keyrune)
+		return 0;
+
+	/* Ctrl-W w: next window. */
+	if (e->lastnormalrune == 0x17 && k->value == 'w') {
+		(void)nextwin(e);
+		e->lastnormalrune = 0;
+		e->lastmotioncount = 0;
+		e->seqcount = 0;
+		e->count = 0;
+		e->opcount = 0;
+		goto afterkey;
+	}
+
+	/* VISUAL extra keys: v, yi{obj}, di{obj} etc. */
+	if (e->mode == Modevisual) {
+		if (e->vtipending) {
+			e->vtipending = 0;
+			(void)vselectinside(e, k->value);
+			goto afterkey;
+		}
+		if (k->value == 'i') {
+			e->vtipending = 1;
+			goto afterkey;
+		}
+		if (k->value == 'v') {
+			e->vtipending = 0;
+			setmode(e, Modenormal);
+			goto afterkey;
+		}
+		if (k->value == 'y') {
+			long sy, sx, ey, ex;
+
+			vselbounds(e, &sy, &sx, &ey, &ex);
+			(void)yankrange(e, sy, sx, ey, ex);
+			setmsg(e, "yanked");
+			e->vtipending = 0;
+			setmode(e, Modenormal);
+			goto afterkey;
+		}
+		if (k->value == 'd') {
+			long sy, sx, ey, ex;
+
+			vselbounds(e, &sy, &sx, &ey, &ex);
+			(void)delrange(e, sy, sx, ey, ex, 1);
+			setmsg(e, "deleted");
+			e->vtipending = 0;
+			setmode(e, Modenormal);
+			goto afterkey;
+		}
+		if (k->value == 'c' || k->value == 's' || k->value == 'S') {
+			long sy, sx, ey, ex;
+
+			vselbounds(e, &sy, &sx, &ey, &ex);
+			(void)delrange(e, sy, sx, ey, ex, 1);
+			e->vtipending = 0;
+			setmode(e, Modeinsert);
+			goto afterkey;
+		}
+	}
+
+	/* Count parsing (vim-like): digits accumulate unless leading '0'. */
+	if (k->value >= '0' && k->value <= '9') {
+		if (e->count > 0 || k->value != '0') {
+			e->count = e->count * 10 + (k->value - '0');
+			e->lastnormalrune = 0;
+			e->lastmotioncount = 0;
+			e->seqcount = 0;
+			return 1;
+		}
+	}
+
+	/* Multi-key sequences handled before table dispatch (gg, gt/gT, leader). */
+	if (e->lastnormalrune == 'g' && k->value == 'g') {
+		long line;
+
+		line = e->seqcount > 0 ? e->seqcount - 1 : 0;
+		e->cy = clamp(line, 0, e->b.nline - 1);
+		e->cx = 0;
+		e->lastnormalrune = 0;
+		e->lastmotioncount = 0;
+		e->seqcount = 0;
+		e->count = 0;
+		e->opcount = 0;
+		return 1;
+	}
+	if (e->lastnormalrune == 'g' && (k->value == 't' || k->value == 'T')) {
+		long idx;
+
+		if (e->ntab <= 1) {
+			setmsg(e, "Only one tab");
+			e->lastnormalrune = 0;
+			e->lastmotioncount = 0;
+			e->seqcount = 0;
+			e->count = 0;
+			e->opcount = 0;
+			return 1;
+		}
+		if (e->seqcount > 0) {
+			idx = e->seqcount - 1;
+		} else if (k->value == 't') {
+			idx = (e->curtab + 1) % e->ntab;
+		} else {
+			idx = e->curtab - 1;
+			if (idx < 0)
+				idx = e->ntab - 1;
+		}
+		if (idx < 0)
+			idx = 0;
+		if (idx >= e->ntab)
+			idx = e->ntab - 1;
+		if (tabswitch(e, idx) < 0)
+			setmsg(e, "Cannot switch tab");
+		e->lastnormalrune = 0;
+		e->lastmotioncount = 0;
+		e->seqcount = 0;
+		e->count = 0;
+		e->opcount = 0;
+		return 1;
+	}
+	if (e->mode == Modenormal && e->lastnormalrune == ' ' && (k->value == 'n' || k->value == 'h' || k->value == 'j' || k->value == 'k' || k->value == 'l')) {
+		long idx;
+
+		idx = e->curtab;
+		if (k->value == 'n') {
+			if (tabnew(e, nil) < 0)
+				setmsg(e, "Cannot open tab");
+		} else {
+			if (e->ntab <= 1) {
+				setmsg(e, "Only one tab");
+			} else {
+				if (k->value == 'h')
+					idx = 0;
+				else if (k->value == 'l')
+					idx = e->ntab - 1;
+				else if (k->value == 'j') {
+					idx = e->curtab - 1;
+					if (idx < 0)
+						idx = e->ntab - 1;
+				} else if (k->value == 'k') {
+					idx = (e->curtab + 1) % e->ntab;
+				}
+				if (tabswitch(e, idx) < 0)
+					setmsg(e, "Cannot switch tab");
+			}
+		}
+		e->lastnormalrune = 0;
+		e->lastmotioncount = 0;
+		e->seqcount = 0;
+		e->count = 0;
+		e->opcount = 0;
+		return 1;
+	}
+
+	argsinit(&a);
+	if (k->value == 'f' || k->value == 'F' || k->value == 't' || k->value == 'T' || k->value == '(' || k->value == ')')
+		(void)argspush(&a, k->value);
+	handled = movedispatch(e, e->mode, nvkeys, (long)(sizeof nvkeys / sizeof nvkeys[0]), k, &a);
+	argsfree(&a);
+
+	/* Apply the original afterkey state cleanup rules when a rune move fired. */
+	if (handled)
+		goto afterkey;
+
+	return 0;
+
+afterkey:
+	r = k->value;
+	if (r != 'l' && r != 'r' && r != 'g' && r != ' ' && r != 0x17)
+		e->lastnormalrune = 0;
+	if (r != 'l')
+		e->lastmotioncount = 0;
+	if (r != 'g')
+		e->seqcount = 0;
+	if (e->mode == Modenormal || e->mode == Modevisual)
+		normalfixcursor(e);
+	return 1;
+}
+
 /*
  * main starts the editor.
  *
@@ -5405,7 +7651,7 @@ int
 main(int argc, char **argv)
 {
 	Eek e;
-	Key k;
+	KeyEvent kev;
 
 	memset(&e, 0, sizeof e);
 	bufinit(&e.b);
@@ -5466,943 +7712,57 @@ main(int argc, char **argv)
 		draw(&e);
 		if (e.quit)
 			break;
-		if (keyread(&e.t, &k) < 0)
-			break;
+		if (!feedpop(&e, &kev)) {
+			memset(&kev, 0, sizeof kev);
+			if (keyread(&e.t, &kev.k) < 0)
+				break;
+			kev.nomap = 0;
+			kev.src = Keysrcuser;
+		}
+		if (kev.src == Keysrcdot && e.dotreplayleft > 0)
+			e.dotreplayleft--;
 		if (e.mode != Modeinsert)
 			e.undopending = 0;
 		if (e.msg[0] != 0 && e.mode != Modecmd)
 			e.msg[0] = 0;
 
+		/* Apply maps (NORMAL/VISUAL only) before dispatch. */
+		if (!kev.nomap && (e.mode == Modenormal || e.mode == Modevisual) && kev.k.kind == Keyrune) {
+			if (mapapply(&e, e.mode, kev.k.value))
+				continue;
+		}
+
+		/* '.' recording: start on change keys in NORMAL; record effective keys. */
+		if (e.dotreplayleft <= 0) {
+			if (!e.dotrec && e.mode == Modenormal && kev.k.kind == Keyrune && dotstartkey(kev.k.value))
+				dotrecstart(&e);
+			if (e.dotrec) {
+				if (!(e.mode == Modenormal && kev.k.kind == Keyrune && kev.k.value == '.'))
+					dotrecadd(&e, &kev);
+			}
+		}
+
 		if (e.mode == Modecmd) {
-			if (k.kind == Keyesc) {
-				if (e.cmdkeepvisual)
-					setmode(&e, Modevisual);
-				else
-					setmode(&e, Modenormal);
-				e.cmdrange = 0;
-				e.cmdkeepvisual = 0;
-				cmdclear(&e);
-				e.cmdprefix = ':';
-				continue;
-			}
-			if (k.kind == Keyenter) {
-				if (e.cmdprefix == '/')
-					(void)searchexec(&e);
-				else
-					(void)cmdexec(&e);
-				e.cmdrange = 0;
-				e.cmdkeepvisual = 0;
-				setmode(&e, Modenormal);
-				cmdclear(&e);
-				e.cmdprefix = ':';
-				continue;
-			}
-			if (k.kind == Keybackspace) {
-				if (e.cmdn > 0)
-					e.cmdn--;
-				continue;
-			}
-			if (k.kind == Keyrune) {
-				if (k.value == '\n') {
-					/* Some terminals send '\n' for Enter; keep cmdline usable. */
-					if (e.cmdprefix == '/')
-						(void)searchexec(&e);
-					else
-						(void)cmdexec(&e);
-					e.cmdrange = 0;
-					e.cmdkeepvisual = 0;
-					setmode(&e, Modenormal);
-					cmdclear(&e);
-					e.cmdprefix = ':';
-					continue;
-				}
-				if (k.value >= 0x20 && k.value < 0x7f) {
-					if (e.cmdn + 1 < (long)sizeof e.cmd)
-						e.cmd[e.cmdn++] = (char)k.value;
-				}
-				continue;
-			}
+			(void)cmdkey(&e, &kev.k);
 			continue;
 		}
-
 		if (e.mode == Modeinsert) {
-			if (k.kind == Keyesc) {
-				if (e.cx > 0)
-					e.cx = prevutf8(&e, e.cy, e.cx);
-				setmode(&e, Modenormal);
-				e.undopending = 0;
-				e.lastnormalrune = 0;
-				e.lastmotioncount = 0;
-				e.seqcount = 0;
-				e.count = 0;
-				e.opcount = 0;
-				e.dpending = 0;
-				e.cpending = 0;
-				e.ypending = 0;
-				e.cmdrange = 0;
-				e.fcount = 0;
-				e.fpending = 0;
-				e.tipending = 0;
-				e.vtipending = 0;
-				normalfixcursor(&e);
-				continue;
-			}
-			switch (k.kind) {
-			case Keyleft: movel(&e); break;
-			case Keyright: mover(&e); break;
-			case Keyup: moveu(&e); break;
-			case Keydown: moved(&e); break;
-			case Keybackspace: (void)delback(&e); break;
-			case Keyenter: (void)insertnl(&e); break;
-			case Keyrune: {
-				char s[8];
-				long n;
-
-				if (k.value == '\n') {
-					(void)insertnl(&e);
-					break;
-				}
-				if (k.value == '\t') {
-					s[0] = '\t';
-					(void)insertbytes(&e, s, 1);
-					break;
-				}
-				if (k.value < 0x20)
-					break;
-				n = utf8enc(k.value, s);
-				(void)insertbytes(&e, s, n);
-				break;
-			}
-			default:
-				break;
-			}
-			continue;
+			(void)inskey(&e, &kev.k);
+			goto afterdispatch;
 		}
+		(void)nvkey(&e, &kev.k);
+	afterdispatch:
+		;
 
-		/*
-		 * Ctrl+hjkl window navigation.
-		 *
-		 * Handle this before operator-pending logic so it always works.
-		 */
-		if (nwins(e.layout) > 1) {
-			int did;
-			int dir;
-
-			did = 0;
-			dir = -1;
-			if (k.kind == Keybackspace) {
-				/* Many terminals send DEL for Ctrl-H / Backspace. */
-				did = 1;
-				dir = Dirleft;
-			}
-			if (k.kind == Keyrune) {
-				if (k.value == 0x08) { did = 1; dir = Dirleft; }
-				else if (k.value == '\n') { did = 1; dir = Dirdown; }
-				else if (k.value == 0x0b) { did = 1; dir = Dirup; }
-				else if (k.value == 0x0c) { did = 1; dir = Dirright; }
-			}
-			if (did && dir >= 0) {
-				(void)focusdir(&e, dir);
-				e.dpending = 0;
-				e.cpending = 0;
-				e.ypending = 0;
-				e.fpending = 0;
-				e.fcount = 0;
-				e.tipending = 0;
-				e.vtipending = 0;
-				e.lastnormalrune = 0;
-				e.lastmotioncount = 0;
-				e.seqcount = 0;
-				e.count = 0;
-				e.opcount = 0;
-				continue;
-			}
+		if (e.dotrec) {
+			if (e.mode == Modenormal && !e.dpending && !e.cpending && !e.ypending &&
+			    !e.fpending && !e.rpending && !e.tipending && !e.vtipending)
+				dotrecsave(&e);
 		}
-
-		if (k.kind == Keyesc) {
-			e.dpending = 0;
-			e.cpending = 0;
-			e.ypending = 0;
-			e.fpending = 0;
-			e.fcount = 0;
-			e.tipending = 0;
-			e.vtipending = 0;
-			e.lastnormalrune = 0;
-			e.lastmotioncount = 0;
-			e.seqcount = 0;
-			e.count = 0;
-			e.opcount = 0;
-			if (e.mode == Modevisual)
-				setmode(&e, Modenormal);
-			continue;
-		}
-
-		if (e.fpending) {
-			e.fpending = 0;
-			if (k.kind == Keyrune) {
-				long n;
-				long mode;
-				long op;
-				long origcx;
-				long pos;
-				long posend;
-				long curend;
-				long x0, x1;
-
-				n = e.fcount;
-				mode = e.fmode;
-				op = e.fop;
-				e.fcount = 0;
-				e.fmode = 0;
-				e.fop = 0;
-
-				origcx = e.cx;
-				pos = -1;
-				switch (mode) {
-				case 'f':
-				case 't':
-					if (findfwd(&e, k.value, n) < 0)
-						pos = -1;
-					else
-						pos = e.cx;
-					break;
-				case 'F':
-				case 'T':
-					if (findbwd(&e, k.value, n) < 0)
-						pos = -1;
-					else
-						pos = e.cx;
-					break;
-				default:
-					pos = -1;
-					break;
-				}
-
-				if (pos < 0) {
-					setmsg(&e, "Not found: %lc", (long)k.value);
-					e.cx = origcx;
-					goto finddone;
-				}
-				posend = nextutf8(&e, e.cy, pos);
-				curend = nextutf8(&e, e.cy, origcx);
-
-				if (op == 0) {
-					switch (mode) {
-					case 'f':
-					case 'F':
-						e.cx = pos;
-						break;
-					case 't':
-						e.cx = prevutf8(&e, e.cy, pos);
-						break;
-					case 'T':
-						e.cx = posend;
-						break;
-					default:
-						e.cx = origcx;
-						break;
-					}
-				} else {
-					/* Operator-pending applies to current line only. */
-					e.cx = origcx;
-					x0 = origcx;
-					x1 = origcx;
-					switch (mode) {
-					case 'f': /* through */
-						x0 = origcx;
-						x1 = posend;
-						break;
-					case 't': /* until */
-						x0 = origcx;
-						x1 = pos;
-						break;
-					case 'F': /* backward through */
-						x0 = pos;
-						x1 = curend;
-						break;
-					case 'T': /* backward until */
-						x0 = posend;
-						x1 = curend;
-						break;
-					default:
-						break;
-					}
-					if (x0 != x1) {
-						if (op == 'y') {
-							(void)yankrange(&e, e.cy, x0, e.cy, x1);
-							/* Preserve cursor. */
-							e.cx = origcx;
-						} else {
-							(void)delrange(&e, e.cy, x0, e.cy, x1, 1);
-							if (op == 'c')
-								setmode(&e, Modeinsert);
-						}
-					}
-				}
-			finddone:
-				;
-			}
-			e.lastnormalrune = 0;
-			e.lastmotioncount = 0;
-			e.seqcount = 0;
-			e.count = 0;
-			e.opcount = 0;
-			continue;
-		}
-
-		if (e.dpending) {
-			if (k.kind == Keyrune && k.value >= '0' && k.value <= '9') {
-				if (e.count > 0 || k.value != '0') {
-					e.count = e.count * 10 + (k.value - '0');
-					continue;
-				}
-			}
-
-			e.dpending = 0;
-			if (k.kind == Keyrune) {
-				long total;
-
-				total = countval(e.opcount) * countval(e.count);
-				e.opcount = 0;
-				e.count = 0;
-				switch (k.value) {
-				case 'd':
-					(void)dellines(&e, total);
-					break;
-				case 'i':
-					e.tipending = 1;
-					e.tiop = 'd';
-					e.opcount = total;
-					continue;
-				case 'w':
-					(void)delwords(&e, total);
-					break;
-				case 'e':
-					(void)delendwords(&e, total);
-					break;
-				case 'f':
-				case 't':
-				case 'F':
-				case 'T':
-					e.fpending = 1;
-					e.fcount = total;
-					e.fmode = k.value;
-					e.fop = 'd';
-					continue;
-				default:
-					setmsg(&e, "Unknown d%lc", (long)k.value);
-					break;
-				}
-			}
-			if (e.mode == Modenormal)
-				normalfixcursor(&e);
-			e.lastnormalrune = 0;
-			e.lastmotioncount = 0;
-			e.seqcount = 0;
-			continue;
-		}
-
-		if (e.tipending) {
-			e.tipending = 0;
-			if (k.kind == Keyrune) {
-				(void)delinside(&e, e.tiop, k.value);
-			}
-			e.tiop = 0;
-			e.opcount = 0;
-			e.count = 0;
-			e.lastnormalrune = 0;
-			e.lastmotioncount = 0;
-			e.seqcount = 0;
-			continue;
-		}
-
-		if (e.ypending) {
-			if (k.kind == Keyrune && k.value >= '0' && k.value <= '9') {
-				if (e.count > 0 || k.value != '0') {
-					e.count = e.count * 10 + (k.value - '0');
-					continue;
-				}
-			}
-
-			e.ypending = 0;
-			if (k.kind == Keyrune) {
-				long total;
-				long sy, sx;
-				long ty, tx;
-
-				total = countval(e.opcount) * countval(e.count);
-				e.opcount = 0;
-				e.count = 0;
-				sy = e.cy;
-				sx = e.cx;
-
-				switch (k.value) {
-				case 'y':
-					(void)yanklines(&e, e.cy, total);
-					break;
-				case 'w':
-					{
-						long i;
-						long cy, cx;
-
-						cy = sy;
-						cx = sx;
-						for (i = 0; i < total; i++) {
-							e.cy = cy;
-							e.cx = cx;
-							wordtarget(&e, &ty, &tx);
-							if (ty == cy && tx <= cx)
-								break;
-							cy = ty;
-							cx = tx;
-						}
-						e.cy = sy;
-						e.cx = sx;
-						(void)yankrange(&e, sy, sx, cy, cx);
-					}
-					break;
-				case 'e':
-					endwordtarget(&e, &ty, &tx);
-					(void)yankrange(&e, e.cy, e.cx, e.cy, tx);
-					break;
-				case '$': {
-					long len;
-
-					len = linelen(&e, e.cy);
-					(void)yankrange(&e, e.cy, e.cx, e.cy, len);
-					break;
-				}
-				case 'f':
-				case 't':
-				case 'F':
-				case 'T':
-					e.fpending = 1;
-					e.fcount = total;
-					e.fmode = k.value;
-					e.fop = 'y';
-					continue;
-				default:
-					setmsg(&e, "Unknown y%lc", (long)k.value);
-					break;
-				}
-				e.cy = sy;
-				e.cx = sx;
-			}
-			e.lastnormalrune = 0;
-			e.lastmotioncount = 0;
-			e.seqcount = 0;
-			continue;
-		}
-
-		if (e.cpending) {
-			if (k.kind == Keyrune && k.value >= '0' && k.value <= '9') {
-				if (e.count > 0 || k.value != '0') {
-					e.count = e.count * 10 + (k.value - '0');
-					continue;
-				}
-			}
-
-			e.cpending = 0;
-			if (k.kind == Keyrune) {
-				long total;
-
-				total = countval(e.opcount) * countval(e.count);
-				e.opcount = 0;
-				e.count = 0;
-				switch (k.value) {
-				case 'w':
-					(void)delwords(&e, total);
-					setmode(&e, Modeinsert);
-					break;
-				case 'f':
-				case 't':
-				case 'F':
-				case 'T':
-					e.fpending = 1;
-					e.fcount = total;
-					e.fmode = k.value;
-					e.fop = 'c';
-					continue;
-				case 'i':
-					e.tipending = 1;
-					e.tiop = 'c';
-					e.opcount = total;
-					continue;
-				default:
-					setmsg(&e, "Unknown c%lc", (long)k.value);
-					break;
-				}
-			}
-			if (e.mode == Modenormal)
-				normalfixcursor(&e);
-			e.lastnormalrune = 0;
-			e.lastmotioncount = 0;
-			e.seqcount = 0;
-			continue;
-		}
-
-		if (k.kind == Keyup)
-			moveu(&e);
-		else if (k.kind == Keydown)
-			moved(&e);
-		else if (k.kind == Keyleft)
-			movel(&e);
-		else if (k.kind == Keyright)
-			mover(&e);
-		else if (k.kind == Keyrune) {
-			if (e.lastnormalrune == 0x17 && k.value == 'w') {
-				(void)nextwin(&e);
-				e.lastnormalrune = 0;
-				e.lastmotioncount = 0;
-				e.seqcount = 0;
-				e.count = 0;
-				e.opcount = 0;
-				goto afterkey;
-			}
-			if (e.mode == Modevisual) {
-				if (e.vtipending) {
-					e.vtipending = 0;
-					(void)vselectinside(&e, k.value);
-					goto afterkey;
-				}
-				if (k.value == 'i') {
-					e.vtipending = 1;
-					goto afterkey;
-				}
-				if (k.value == 'v') {
-					e.vtipending = 0;
-					setmode(&e, Modenormal);
-					goto afterkey;
-				}
-				if (k.value == 'y') {
-					long sy, sx, ey, ex;
-
-					vselbounds(&e, &sy, &sx, &ey, &ex);
-					(void)yankrange(&e, sy, sx, ey, ex);
-					setmsg(&e, "yanked");
-					e.vtipending = 0;
-					setmode(&e, Modenormal);
-					goto afterkey;
-				}
-				if (k.value == 'd') {
-					long sy, sx, ey, ex;
-
-					vselbounds(&e, &sy, &sx, &ey, &ex);
-					(void)delrange(&e, sy, sx, ey, ex, 1);
-					setmsg(&e, "deleted");
-					e.vtipending = 0;
-					setmode(&e, Modenormal);
-					goto afterkey;
-				}
-			}
-
-			if (k.value >= '0' && k.value <= '9') {
-				if (e.count > 0 || k.value != '0') {
-					e.count = e.count * 10 + (k.value - '0');
-					e.lastnormalrune = 0;
-					e.lastmotioncount = 0;
-					e.seqcount = 0;
-					continue;
-				}
-			}
-
-			if (e.lastnormalrune == 'g' && k.value == 'g') {
-				long line;
-
-				line = e.seqcount > 0 ? e.seqcount - 1 : 0;
-				e.cy = clamp(line, 0, e.b.nline - 1);
-				e.cx = 0;
-				e.lastnormalrune = 0;
-				e.lastmotioncount = 0;
-				e.seqcount = 0;
-				e.count = 0;
-				e.opcount = 0;
-				continue;
-			}
-			if (e.lastnormalrune == 'g' && (k.value == 't' || k.value == 'T')) {
-				long idx;
-
-				if (e.ntab <= 1) {
-					setmsg(&e, "Only one tab");
-					e.lastnormalrune = 0;
-					e.lastmotioncount = 0;
-					e.seqcount = 0;
-					e.count = 0;
-					e.opcount = 0;
-					continue;
-				}
-				if (e.seqcount > 0) {
-					idx = e.seqcount - 1;
-				} else if (k.value == 't') {
-					idx = (e.curtab + 1) % e.ntab;
-				} else {
-					idx = e.curtab - 1;
-					if (idx < 0)
-						idx = e.ntab - 1;
-				}
-				if (idx < 0)
-					idx = 0;
-				if (idx >= e.ntab)
-					idx = e.ntab - 1;
-				if (tabswitch(&e, idx) < 0)
-					setmsg(&e, "Cannot switch tab");
-				e.lastnormalrune = 0;
-				e.lastmotioncount = 0;
-				e.seqcount = 0;
-				e.count = 0;
-				e.opcount = 0;
-				continue;
-			}
-			if (e.mode == Modenormal && e.lastnormalrune == ' ' && (k.value == 'n' || k.value == 'h' || k.value == 'j' || k.value == 'k' || k.value == 'l')) {
-				long idx;
-
-				idx = e.curtab;
-				if (k.value == 'n') {
-					if (tabnew(&e, nil) < 0)
-						setmsg(&e, "Cannot open tab");
-				} else {
-					if (e.ntab <= 1) {
-						setmsg(&e, "Only one tab");
-					} else {
-						if (k.value == 'h')
-							idx = 0;
-						else if (k.value == 'l')
-							idx = e.ntab - 1;
-						else if (k.value == 'j') {
-							idx = e.curtab - 1;
-							if (idx < 0)
-								idx = e.ntab - 1;
-						} else if (k.value == 'k') {
-							idx = (e.curtab + 1) % e.ntab;
-						}
-						if (tabswitch(&e, idx) < 0)
-							setmsg(&e, "Cannot switch tab");
-					}
-				}
-				e.lastnormalrune = 0;
-				e.lastmotioncount = 0;
-				e.seqcount = 0;
-				e.count = 0;
-				e.opcount = 0;
-				continue;
-			}
-
-			switch (k.value) {
-			case 'q':
-				goto done;
-			case 'u':
-				undopop(&e);
-				e.count = 0;
-				e.opcount = 0;
-				e.lastnormalrune = 0;
-				e.lastmotioncount = 0;
-				e.seqcount = 0;
-				break;
-			case 'n':
-				if (e.lastsearch == nil || e.lastsearch[0] == 0) {
-					setmsg(&e, "No previous search");
-					break;
-				}
-				if (searchforward(&e, e.lastsearch) < 0)
-					setmsg(&e, "Pattern not found: %s", e.lastsearch);
-				e.count = 0;
-				e.opcount = 0;
-				e.lastnormalrune = 0;
-				e.lastmotioncount = 0;
-				e.seqcount = 0;
-				break;
-			case 'N':
-				if (e.lastsearch == nil || e.lastsearch[0] == 0) {
-					setmsg(&e, "No previous search");
-					break;
-				}
-				if (searchbackward(&e, e.lastsearch) < 0)
-					setmsg(&e, "Pattern not found: %s", e.lastsearch);
-				e.count = 0;
-				e.opcount = 0;
-				e.lastnormalrune = 0;
-				e.lastmotioncount = 0;
-				e.seqcount = 0;
-				break;
-			case 'v':
-				if (e.mode == Modevisual) {
-					e.dpending = 0;
-					e.cpending = 0;
-					e.ypending = 0;
-					e.fpending = 0;
-					e.fcount = 0;
-					e.tipending = 0;
-					e.vtipending = 0;
-					setmode(&e, Modenormal);
-				} else {
-					e.dpending = 0;
-					e.cpending = 0;
-					e.ypending = 0;
-					e.fpending = 0;
-					e.fcount = 0;
-					e.tipending = 0;
-					e.vay = e.cy;
-					e.vax = e.cx;
-					e.vtipending = 0;
-					setmode(&e, Modevisual);
-				}
-				e.count = 0;
-				e.opcount = 0;
-				break;
-			case ':':
-				{
-					int wasvisual;
-
-					wasvisual = (e.mode == Modevisual);
-					setmode(&e, Modecmd);
-					cmdclear(&e);
-					e.cmdprefix = ':';
-					e.cmdkeepvisual = wasvisual;
-					if (wasvisual) {
-						vsellines(&e, &e.cmdy0, &e.cmdy1);
-						e.cmdrange = 1;
-					} else {
-						e.cmdrange = 0;
-					}
-				}
-				e.lastnormalrune = 0;
-				e.lastmotioncount = 0;
-				e.seqcount = 0;
-				e.count = 0;
-				e.opcount = 0;
-				break;
-			case '/':
-				setmode(&e, Modecmd);
-				cmdclear(&e);
-				e.cmdprefix = '/';
-				e.lastnormalrune = 0;
-				e.lastmotioncount = 0;
-				e.seqcount = 0;
-				e.count = 0;
-				e.opcount = 0;
-				break;
-			case 'd':
-				e.opcount = countval(e.count);
-				e.count = 0;
-				e.dpending = 1;
-				e.lastnormalrune = 0;
-				e.lastmotioncount = 0;
-				e.seqcount = 0;
-				break;
-			case 'c':
-				e.opcount = countval(e.count);
-				e.count = 0;
-				e.cpending = 1;
-				e.lastnormalrune = 0;
-				e.lastmotioncount = 0;
-				e.seqcount = 0;
-				break;
-			case 'y':
-				e.opcount = countval(e.count);
-				e.count = 0;
-				e.ypending = 1;
-				e.lastnormalrune = 0;
-				e.lastmotioncount = 0;
-				e.seqcount = 0;
-				break;
-			case 'f':
-				e.fpending = 1;
-				e.fcount = countval(e.count);
-				e.fmode = 'f';
-				e.fop = 0;
-				e.count = 0;
-				e.opcount = 0;
-				e.lastnormalrune = 0;
-				e.lastmotioncount = 0;
-				e.seqcount = 0;
-				break;
-			case 'F':
-				e.fpending = 1;
-				e.fcount = countval(e.count);
-				e.fmode = 'F';
-				e.fop = 0;
-				e.count = 0;
-				e.opcount = 0;
-				e.lastnormalrune = 0;
-				e.lastmotioncount = 0;
-				e.seqcount = 0;
-				break;
-			case 't':
-				e.fpending = 1;
-				e.fcount = countval(e.count);
-				e.fmode = 't';
-				e.fop = 0;
-				e.count = 0;
-				e.opcount = 0;
-				e.lastnormalrune = 0;
-				e.lastmotioncount = 0;
-				e.seqcount = 0;
-				break;
-			case 'T':
-				e.fpending = 1;
-				e.fcount = countval(e.count);
-				e.fmode = 'T';
-				e.fop = 0;
-				e.count = 0;
-				e.opcount = 0;
-				e.lastnormalrune = 0;
-				e.lastmotioncount = 0;
-				e.seqcount = 0;
-				break;
-			case 'p':
-				if (e.yline)
-					(void)pastelinewise(&e, 0);
-				else
-					(void)pastecharwise(&e, 0);
-				e.count = 0;
-				break;
-			case 'P':
-				if (e.yline)
-					(void)pastelinewise(&e, 1);
-				else
-					(void)pastecharwise(&e, 1);
-				e.count = 0;
-				break;
-			case 'C': {
-				Line *l;
-				long len;
-				long nlines;
-				long i;
-
-				nlines = countval(e.count);
-				e.count = 0;
-				if (undopush(&e) < 0)
-					break;
-				l = bufgetline(&e.b, e.cy);
-				if (l != nil) {
-					len = l->n;
-					if (e.cx < len)
-						(void)yset(&e, l->s + e.cx, len - e.cx, 0);
-					else
-						yclear(&e);
-					if (e.cx < len)
-						(void)linedelrange(l, e.cx, len - e.cx);
-				}
-				for (i = 1; i < nlines; i++) {
-					Line *nl;
-					char nlsep;
-
-					nl = bufgetline(&e.b, e.cy + 1);
-					if (nl == nil)
-						break;
-					nlsep = '\n';
-					(void)yappend(&e, &nlsep, 1);
-					if (nl->n > 0)
-						(void)yappend(&e, nl->s, nl->n);
-					(void)bufdelline(&e.b, e.cy + 1);
-				}
-				e.dirty = 1;
-				setmode(&e, Modeinsert);
-				e.lastnormalrune = 0;
-				e.lastmotioncount = 0;
-				e.seqcount = 0;
-				break;
-			}
-			case 'a':
-				e.cx = nextutf8(&e, e.cy, e.cx);
-				setmode(&e, Modeinsert);
-				e.lastnormalrune = 0;
-				e.lastmotioncount = 0;
-				e.seqcount = 0;
-				e.count = 0;
-				e.opcount = 0;
-				break;
-			case 'A':
-				e.cx = linelen(&e, e.cy);
-				setmode(&e, Modeinsert);
-				e.lastnormalrune = 0;
-				e.lastmotioncount = 0;
-				e.seqcount = 0;
-				e.count = 0;
-				e.opcount = 0;
-				break;
-			case 'o':
-				(void)openlinebelow(&e);
-				e.lastnormalrune = 0;
-				break;
-			case 'O':
-				(void)openlineabove(&e);
-				e.lastnormalrune = 0;
-				break;
-			case 'h': repeat(&e, movel, countval(e.count)); e.count = 0; break;
-			case 'j': repeat(&e, moved, countval(e.count)); e.count = 0; break;
-			case 'k': repeat(&e, moveu, countval(e.count)); e.count = 0; break;
-			case 'l':
-				repeat(&e, mover, countval(e.count));
-				e.count = 0;
-				break;
-			case '(':
-			case ')': {
-				long npage;
-				long rows;
-				long delta;
-
-				npage = countval(e.count);
-				rows = curwinrows(&e);
-				delta = rows * npage;
-				if (k.value == '(')
-					delta = -delta;
-				e.cy = clamp(e.cy + delta, 0, e.b.nline > 0 ? e.b.nline - 1 : 0);
-				e.rowoff = e.rowoff + delta;
-				if (e.rowoff < 0)
-					e.rowoff = 0;
-				e.count = 0;
-				e.opcount = 0;
-				break;
-			}
-			case '0': e.cx = 0; break;
-			case '$': e.cx = linelen(&e, e.cy); break;
-			case 'w': repeat(&e, movew, countval(e.count)); e.count = 0; break;
-			case 'b': repeat(&e, moveb, countval(e.count)); e.count = 0; break;
-			case 'i': setmode(&e, Modeinsert); e.count = 0; e.opcount = 0; break;
-			case 'x': (void)delat_yank(&e, countval(e.count)); e.count = 0; break;
-			case 'G':
-				if (e.count > 0)
-					e.cy = clamp(e.count - 1, 0, e.b.nline - 1);
-				else
-					e.cy = e.b.nline - 1;
-				e.cx = 0;
-				e.count = 0;
-				e.opcount = 0;
-				break;
-			case 'g':
-				e.lastnormalrune = 'g';
-				e.seqcount = e.count;
-				e.count = 0;
-				break;
-			case ' ':
-				/* Space leader: used for tab shortcuts. */
-				e.lastnormalrune = ' ';
-				e.seqcount = 0;
-				e.count = 0;
-				e.opcount = 0;
-				break;
-			case 0x17: /* Ctrl-W */
-				e.lastnormalrune = 0x17;
-				e.count = 0;
-				e.opcount = 0;
-				break;
-			default:
-				break;
-			}
-			afterkey:
-			if (k.value != 'l' && k.value != 'r' && k.value != 'g' && k.value != ' ' && k.value != 0x17)
-				e.lastnormalrune = 0;
-			if (k.value != 'l')
-				e.lastmotioncount = 0;
-			if (k.value != 'g')
-				e.seqcount = 0;
-		}
-		if (e.mode == Modenormal || e.mode == Modevisual)
-			normalfixcursor(&e);
+		if (e.quit)
+			break;
 	}
 
-done:
 	/* Free inactive tabs (the active tab lives in e.* fields). */
 	if (e.tab != nil) {
 		long i;
@@ -6420,6 +7780,7 @@ done:
 	yclear(&e);
 	undofree(&e);
 	nodefree(e.layout);
+	mapfreeall(&e);
 	free(e.lastsearch);
 	setcursorshape(&e, Cursornormal);
 	termclear(&e.t);
