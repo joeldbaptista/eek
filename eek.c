@@ -3626,6 +3626,147 @@ readfileinsert(Eek *e, const char *path, long at)
 }
 
 /*
+ * runinsert executes a shell command and inserts its stdout at the cursor.
+ *
+ * If stdout has multiple lines, they are inserted as multiple buffer lines,
+ * and any existing text to the right of the cursor is moved to the end of the
+ * last inserted line.
+ */
+static long
+runinsert(Eek *e, const char *cmd)
+{
+	FILE *fp;
+	char *line;
+	size_t cap;
+	ssize_t n;
+	long nins;
+	Line *l;
+	char *tail;
+	long tailn;
+
+	if (e == nil || cmd == nil || *cmd == 0)
+		return -1;
+
+	/* Ensure there is at least one line to insert into. */
+	if (e->b.nline <= 0) {
+		if (bufinsertline(&e->b, 0, "", 0) < 0)
+			return -1;
+		e->cy = 0;
+		e->cx = 0;
+	}
+
+	fp = popen(cmd, "r");
+	if (fp == nil)
+		return -1;
+
+	line = nil;
+	cap = 0;
+	/* Peek first line; if there's no output, do nothing. */
+	n = getline(&line, &cap, fp);
+	if (n < 0) {
+		free(line);
+		(void)pclose(fp);
+		return 0;
+	}
+
+	/* Strip newline(s). */
+	while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'))
+		n--;
+
+	/* Save and remove the tail to the right of the cursor. */
+	l = bufgetline(&e->b, e->cy);
+	if (l == nil) {
+		free(line);
+		(void)pclose(fp);
+		return -1;
+	}
+	if (e->cx > l->n)
+		e->cx = l->n;
+	tailn = l->n - e->cx;
+	tail = nil;
+	if (tailn > 0) {
+		tail = malloc((size_t)tailn);
+		if (tail == nil) {
+			free(line);
+			(void)pclose(fp);
+			return -1;
+		}
+		memcpy(tail, l->s + e->cx, (size_t)tailn);
+		if (linedelrange(l, e->cx, tailn) < 0) {
+			free(tail);
+			free(line);
+			(void)pclose(fp);
+			return -1;
+		}
+	}
+
+	nins = 0;
+	/* Insert first stdout line into the current line at the cursor. */
+	if (n > 0) {
+		if (lineinsert(l, e->cx, line, (long)n) < 0) {
+			free(tail);
+			free(line);
+			(void)pclose(fp);
+			return -1;
+		}
+		e->cx += (long)n;
+	}
+	nins++;
+
+	/* Insert remaining stdout lines as new buffer lines. */
+	while ((n = getline(&line, &cap, fp)) >= 0) {
+		while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'))
+			n--;
+		if (insertnl(e) < 0) {
+			free(tail);
+			free(line);
+			(void)pclose(fp);
+			return -1;
+		}
+		l = bufgetline(&e->b, e->cy);
+		if (l == nil) {
+			free(tail);
+			free(line);
+			(void)pclose(fp);
+			return -1;
+		}
+		if (n > 0) {
+			if (lineinsert(l, 0, line, (long)n) < 0) {
+				free(tail);
+				free(line);
+				(void)pclose(fp);
+				return -1;
+			}
+			e->cx = (long)n;
+		} else {
+			e->cx = 0;
+		}
+		nins++;
+	}
+
+	free(line);
+	(void)pclose(fp);
+
+	/* Re-attach original tail to the end of the last inserted line. */
+	if (tailn > 0 && tail != nil) {
+		l = bufgetline(&e->b, e->cy);
+		if (l == nil) {
+			free(tail);
+			return -1;
+		}
+		if (lineinsert(l, e->cx, tail, tailn) < 0) {
+			free(tail);
+			return -1;
+		}
+		/* Keep cursor before the tail (after inserted stdout). */
+		free(tail);
+	}
+
+	e->dirty = 1;
+	return nins;
+}
+
+/*
  * setopt applies a single :set option token.
  *
  * Parameters:
@@ -4204,6 +4345,26 @@ cmdexec(Eek *e)
 		}
 		e->dirty = 1;
 		setmsg(e, "%ld lines read", nins);
+		return 0;
+	}
+
+	if (strcmp(p, "run") == 0) {
+		long nins;
+
+		if (arg == nil || *arg == 0) {
+			setmsg(e, "run: missing command");
+			return -1;
+		}
+		if (undopush(e) < 0) {
+			setmsg(e, "Out of memory");
+			return -1;
+		}
+		nins = runinsert(e, arg);
+		if (nins < 0) {
+			setmsg(e, "Run failed");
+			return -1;
+		}
+		setmsg(e, "%ld lines inserted", nins);
 		return 0;
 	}
 
