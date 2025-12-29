@@ -177,6 +177,7 @@ Command-line with VISUAL selection:
 ## Search
 
 - Start search prompt: `/pattern` then `Enter`
+- Search for word under cursor: `*`
 - Repeat search:
   - Next match: `n`
   - Previous match: `N`

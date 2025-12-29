@@ -6438,6 +6438,117 @@ searchprev(Eek *e, Args *a)
 }
 
 static int
+searchword(Eek *e, Args *a)
+{
+	Line *l;
+	long pos;
+	long x0, x1;
+	long adv;
+	long r;
+	int cls;
+	char *pat;
+	long patn;
+	long n;
+	long i;
+
+	(void)a;
+	if (e == nil)
+		return 0;
+	l = bufgetline(&e->b, e->cy);
+	if (l == nil || l->n <= 0) {
+		setmsg(e, "No word under cursor");
+		goto out;
+	}
+
+	pos = e->cx;
+	if (pos >= l->n)
+		pos = prevutf8(e, e->cy, l->n);
+	if (pos < 0 || pos >= l->n) {
+		setmsg(e, "No word under cursor");
+		goto out;
+	}
+
+	r = utf8dec1(l->s + pos, l->n - pos, &adv);
+	cls = isword(r) ? 1 : (ispunctword(r) ? 2 : 0);
+	if (cls == 0) {
+		setmsg(e, "No word under cursor");
+		goto out;
+	}
+
+	x0 = pos;
+	for (;;) {
+		long px;
+		long pr;
+
+		px = prevutf8(e, e->cy, x0);
+		if (px >= x0)
+			break;
+		pr = utf8dec1(l->s + px, l->n - px, &adv);
+		if (cls == 1) {
+			if (!isword(pr))
+				break;
+		} else {
+			if (!ispunctword(pr))
+				break;
+		}
+		x0 = px;
+	}
+
+	x1 = nextutf8(e, e->cy, pos);
+	for (;;) {
+		long nr;
+		long nx;
+
+		if (x1 >= l->n)
+			break;
+		nr = utf8dec1(l->s + x1, l->n - x1, &adv);
+		if (cls == 1) {
+			if (!isword(nr))
+				break;
+		} else {
+			if (!ispunctword(nr))
+				break;
+		}
+		nx = nextutf8(e, e->cy, x1);
+		if (nx <= x1)
+			break;
+		x1 = nx;
+	}
+
+	patn = x1 - x0;
+	if (patn <= 0) {
+		setmsg(e, "No word under cursor");
+		goto out;
+	}
+	pat = malloc((size_t)patn + 1);
+	if (pat == nil) {
+		setmsg(e, "Out of memory");
+		goto out;
+	}
+	memcpy(pat, l->s + x0, (size_t)patn);
+	pat[patn] = 0;
+
+	free(e->lastsearch);
+	e->lastsearch = pat;
+
+	n = countval(e->count);
+	for (i = 0; i < n; i++) {
+		if (searchforward(e, e->lastsearch) < 0) {
+			setmsg(e, "Pattern not found: %s", e->lastsearch);
+			break;
+		}
+	}
+
+out:
+	e->count = 0;
+	e->opcount = 0;
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	return 0;
+}
+
+static int
 vistoggle(Eek *e, Args *a)
 {
 	(void)a;
@@ -7043,6 +7154,7 @@ static const Move nvkeys[] = {
 	/* search */
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'n', "n", searchnext },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'N', "N", searchprev },
+	{ 1u << Modenormal, Keyrune, '*', "*", searchword },
 
 	/* meta */
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'u', "u", undo },
