@@ -134,15 +134,3 @@ void termflush(Term *t);
  *  - -1 on EOF.
  */
 int keyread(Term *t, Key *k);
-
-/*
- * die prints a formatted message and terminates the program.
- *
- * Parameters:
- *  - fmt: printf-style format string.
- *  - ...: format arguments.
- *
- * Returns:
- *  - does not return.
- */
-void die(const char *fmt, ...);
