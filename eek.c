@@ -18,6 +18,13 @@ typedef struct KeyEvent KeyEvent;
 struct KeyEvent {
 	Key k;
 	int nomap;
+	int src;
+};
+
+enum {
+	Keysrcuser,
+	Keysrcmap,
+	Keysrcdot,
 };
 
 typedef struct Args Args;
@@ -173,6 +180,10 @@ struct Eek {
 	long fcount;         /* Count for pending find motion (nth occurrence). */
 	long fmode;          /* Pending find mode: 'f','F','t','T'. */
 	long fop;            /* Pending operator for find: 0,'d','c','y'. */
+	long lastfindr;      /* Last successful find target rune. */
+	long lastfindmode;   /* Last successful find mode: 'f','F','t','T'. */
+	long rpending;       /* Pending replace-char command ('r' waiting for a rune). */
+	long rcount;         /* Repeat count for pending replace. */
 	long tipending;      /* Pending text-object modifier (e.g. 'di' waiting for delimiter). */
 	long tiop;           /* Text-object operator that is pending ('d' or 'c'). */
 	long vax;            /* VISUAL anchor x (byte offset). */
@@ -202,6 +213,13 @@ struct Eek {
 	KeyEvent feed[512];  /* Injected key events (for maps/macros). */
 	int feedhead;        /* Index of first valid event in feed[]. */
 	int feedlen;         /* Number of valid events in feed[]. */
+	KeyEvent dotbuf[512]; /* Last change (NORMAL '.') replay buffer. */
+	int dotlen;
+	KeyEvent dotrecbuf[512]; /* Recording buffer for in-progress change. */
+	int dotreclen;
+	int dotrec;
+	long dotnundo0;
+	int dotreplayleft;
 	struct {
 		unsigned modes; /* bitmask of Mode* values */
 		long lhs;       /* single rune key */
@@ -215,10 +233,16 @@ static long linelen(Eek *e, long y);
 static long clamp(long v, long lo, long hi);
 static long prevutf8(Eek *e, long y, long at);
 static long nextutf8(Eek *e, long y, long at);
+static long countval(long n);
 static void setmsg(Eek *e, const char *fmt, ...);
 static long utf8enc(long r, char *s);
+static void yclear(Eek *e);
+static int yset(Eek *e, const char *s, long n, int linewise);
+static int yappend(Eek *e, const char *s, long n);
+static int yanklines(Eek *e, long at, long n);
 static int insertbytes(Eek *e, const char *s, long n);
 static int insertnl(Eek *e);
+static int delat_yank(Eek *e, long n);
 static void wordtarget(Eek *e, long *ty, long *tx);
 static void endwordtarget(Eek *e, long *ty, long *tx);
 static void setmode(Eek *e, int mode);
@@ -278,6 +302,20 @@ static int mapset(Eek *e, unsigned modes, long lhs, const char *rhs);
 static int mapdel(Eek *e, unsigned modes, long lhs);
 static int mapapply(Eek *e, int mode, long lhs);
 static void mapfreeall(Eek *e);
+
+static int dotstartkey(long r);
+static void dotrecstart(Eek *e);
+static void dotrecsave(Eek *e);
+static void dotreccancel(Eek *e);
+static void dotrecadd(Eek *e, const KeyEvent *ev);
+static int dotrepeat(Eek *e, Args *a);
+static int findagain(Eek *e, Args *a);
+static int findagainrev(Eek *e, Args *a);
+static void replchars(Eek *e, long r, long n);
+static int replbegin(Eek *e, Args *a);
+static int subchar(Eek *e, Args *a);
+static int delend(Eek *e, Args *a);
+static int sublinecmd(Eek *e, Args *a);
 
 static void
 argsinit(Args *a)
@@ -376,6 +414,247 @@ feedpushfront(Eek *e, const KeyEvent *ev)
 	e->feed[e->feedhead] = *ev;
 	e->feedlen++;
 	return 0;
+}
+
+static int
+dotstartkey(long r)
+{
+	switch (r) {
+	case 'v':
+	case 'd':
+	case 'c':
+	case 's':
+	case 'r':
+	case 'x':
+	case 'p':
+	case 'P':
+	case 'C':
+	case 'D':
+	case 'S':
+	case 'i':
+	case 'a':
+	case 'A':
+	case 'o':
+	case 'O':
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+static void
+replchars(Eek *e, long r, long n)
+{
+	Line *l;
+	char s[8];
+	long nb;
+	long i;
+	long x1;
+	long len;
+
+	if (e == nil)
+		return;
+	if (n <= 0)
+		return;
+	if (undopush(e) < 0)
+		return;
+
+	nb = utf8enc(r, s);
+	if (nb <= 0)
+		return;
+
+	for (i = 0; i < n; i++) {
+		l = bufgetline(&e->b, e->cy);
+		if (l == nil)
+			break;
+		len = l->n;
+		if (e->cx < 0)
+			e->cx = 0;
+		if (e->cx >= len)
+			break;
+		x1 = nextutf8(e, e->cy, e->cx);
+		if (x1 <= e->cx)
+			break;
+		if (linedelrange(l, e->cx, x1 - e->cx) < 0)
+			break;
+		if (lineinsert(l, e->cx, s, nb) < 0)
+			break;
+		e->dirty = 1;
+		if (i + 1 < n)
+			e->cx = nextutf8(e, e->cy, e->cx);
+	}
+}
+
+static int
+replbegin(Eek *e, Args *a)
+{
+	(void)a;
+	if (e == nil)
+		return 0;
+	e->rpending = 1;
+	e->rcount = countval(e->count);
+	e->count = 0;
+	e->opcount = 0;
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	return 0;
+}
+
+static int
+subchar(Eek *e, Args *a)
+{
+	long n;
+
+	(void)a;
+	if (e == nil)
+		return 0;
+	n = countval(e->count);
+	e->count = 0;
+	e->opcount = 0;
+	(void)delat_yank(e, n);
+	setmode(e, Modeinsert);
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	return 0;
+}
+
+static int
+delend(Eek *e, Args *a)
+{
+	Line *l;
+	long len;
+	long nlines;
+	long i;
+
+	(void)a;
+	if (e == nil)
+		return 0;
+	nlines = countval(e->count);
+	e->count = 0;
+	e->opcount = 0;
+	if (undopush(e) < 0)
+		return 0;
+	l = bufgetline(&e->b, e->cy);
+	if (l != nil) {
+		len = l->n;
+		if (e->cx < len)
+			(void)yset(e, l->s + e->cx, len - e->cx, 0);
+		else
+			yclear(e);
+		if (e->cx < len)
+			(void)linedelrange(l, e->cx, len - e->cx);
+	}
+	for (i = 1; i < nlines; i++) {
+		Line *nl;
+		char nlsep;
+
+		nl = bufgetline(&e->b, e->cy + 1);
+		if (nl == nil)
+			break;
+		nlsep = '\n';
+		(void)yappend(e, &nlsep, 1);
+		if (nl->n > 0)
+			(void)yappend(e, nl->s, nl->n);
+		(void)bufdelline(&e->b, e->cy + 1);
+	}
+	e->dirty = 1;
+	if (e->mode == Modenormal)
+		normalfixcursor(e);
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	return 0;
+}
+
+static int
+sublinecmd(Eek *e, Args *a)
+{
+	Line *l;
+	long n;
+	long i;
+
+	(void)a;
+	if (e == nil)
+		return 0;
+	n = countval(e->count);
+	e->count = 0;
+	e->opcount = 0;
+	if (undopush(e) < 0)
+		return 0;
+	(void)yanklines(e, e->cy, n);
+
+	l = bufgetline(&e->b, e->cy);
+	if (l == nil)
+		return 0;
+	if (l->n > 0)
+		(void)linedelrange(l, 0, l->n);
+	for (i = 1; i < n; i++) {
+		if (e->cy + 1 >= e->b.nline)
+			break;
+		(void)bufdelline(&e->b, e->cy + 1);
+	}
+	e->cx = 0;
+	e->dirty = 1;
+	setmode(e, Modeinsert);
+	e->lastnormalrune = 0;
+	e->lastmotioncount = 0;
+	e->seqcount = 0;
+	return 0;
+}
+
+static void
+dotrecstart(Eek *e)
+{
+	if (e == nil)
+		return;
+	e->dotrec = 1;
+	e->dotreclen = 0;
+	e->dotnundo0 = e->nundo;
+}
+
+static void
+dotrecsave(Eek *e)
+{
+	int i;
+
+	if (e == nil)
+		return;
+	if (e->nundo <= e->dotnundo0) {
+		e->dotrec = 0;
+		e->dotreclen = 0;
+		return;
+	}
+	e->dotlen = 0;
+	for (i = 0; i < e->dotreclen && i < (int)(sizeof e->dotbuf / sizeof e->dotbuf[0]); i++)
+		e->dotbuf[e->dotlen++] = e->dotrecbuf[i];
+	e->dotrec = 0;
+	e->dotreclen = 0;
+}
+
+static void
+dotreccancel(Eek *e)
+{
+	if (e == nil)
+		return;
+	e->dotrec = 0;
+	e->dotreclen = 0;
+}
+
+static void
+dotrecadd(Eek *e, const KeyEvent *ev)
+{
+	if (e == nil || ev == nil)
+		return;
+	if (!e->dotrec)
+		return;
+	if (e->dotreclen >= (int)(sizeof e->dotrecbuf / sizeof e->dotrecbuf[0])) {
+		dotreccancel(e);
+		setmsg(e, "dot buffer overflow");
+		return;
+	}
+	e->dotrecbuf[e->dotreclen++] = *ev;
 }
 
 static int
@@ -504,6 +783,7 @@ mapapply(Eek *e, int mode, long lhs)
 				ev.k.kind = Keyrune;
 				ev.k.value = rv[nr];
 				ev.nomap = 1;
+				ev.src = Keysrcmap;
 				if (feedpushfront(e, &ev) < 0) {
 					free(rv);
 					setmsg(e, "map feed overflow");
@@ -6554,6 +6834,134 @@ ctrlw(Eek *e, Args *a)
 	return 0;
 }
 
+static int
+findagain(Eek *e, Args *a)
+{
+	long n;
+	long mode;
+	long r;
+	long pos;
+	long posend;
+	long origcx;
+	long len;
+
+	(void)a;
+	if (e == nil)
+		return 0;
+	if (e->lastfindmode == 0 || e->lastfindr == 0) {
+		setmsg(e, "No previous find");
+		e->count = 0;
+		e->opcount = 0;
+		return 0;
+	}
+	n = countval(e->count);
+	e->count = 0;
+	e->opcount = 0;
+	if (n < 1)
+		n = 1;
+
+	mode = e->lastfindmode;
+	r = e->lastfindr;
+	origcx = e->cx;
+	len = linelen(e, e->cy);
+	pos = -1;
+	switch (mode) {
+	case 'f':
+	case 't':
+		if (findfwd(e, r, n) < 0)
+			pos = -1;
+		else
+			pos = e->cx;
+		break;
+	case 'F':
+	case 'T':
+		if (findbwd(e, r, n) < 0)
+			pos = -1;
+		else
+			pos = e->cx;
+		break;
+	default:
+		pos = -1;
+		break;
+	}
+	if (pos < 0) {
+		setmsg(e, "Not found: %lc", (long)r);
+		e->cx = origcx;
+		return 0;
+	}
+	posend = nextutf8(e, e->cy, pos);
+	if (mode == 't')
+		e->cx = prevutf8(e, e->cy, pos);
+	else if (mode == 'T')
+		e->cx = posend;
+	else
+		e->cx = pos;
+	if (e->cx > len)
+		e->cx = len;
+	return 0;
+}
+
+static int
+findagainrev(Eek *e, Args *a)
+{
+	long mode;
+
+	(void)a;
+	if (e == nil)
+		return 0;
+	mode = e->lastfindmode;
+	if (mode == 'f')
+		e->lastfindmode = 'F';
+	else if (mode == 'F')
+		e->lastfindmode = 'f';
+	else if (mode == 't')
+		e->lastfindmode = 'T';
+	else if (mode == 'T')
+		e->lastfindmode = 't';
+	(void)findagain(e, a);
+	/* restore original mode for subsequent ';' */
+	e->lastfindmode = mode;
+	return 0;
+}
+
+static int
+dotrepeat(Eek *e, Args *a)
+{
+	long n;
+	long i;
+	int j;
+	KeyEvent ev;
+
+	(void)a;
+	if (e == nil)
+		return 0;
+	if (e->dotlen <= 0) {
+		setmsg(e, "No previous change");
+		e->count = 0;
+		e->opcount = 0;
+		return 0;
+	}
+	n = countval(e->count);
+	e->count = 0;
+	e->opcount = 0;
+	if (n < 1)
+		n = 1;
+
+	for (i = 0; i < n; i++) {
+		for (j = e->dotlen - 1; j >= 0; j--) {
+			ev = e->dotbuf[j];
+			ev.nomap = 1;
+			ev.src = Keysrcdot;
+			if (feedpushfront(e, &ev) < 0) {
+				setmsg(e, "dot feed overflow");
+				return 0;
+			}
+		}
+		e->dotreplayleft += e->dotlen;
+	}
+	return 0;
+}
+
 static const Move nvkeys[] = {
 	/* motion */
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'h', "{n}h", curleft },
@@ -6572,6 +6980,8 @@ static const Move nvkeys[] = {
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'F', "F{c}", findbegin },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 't', "t{c}", findbegin },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'T', "T{c}", findbegin },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, ';', ";", findagain },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, ',', ",", findagainrev },
 
 	/* mode */
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'v', "v", vistoggle },
@@ -6590,7 +7000,11 @@ static const Move nvkeys[] = {
 
 	/* edits */
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'x', "{n}x", delchar },
+	{ 1u << Modenormal, Keyrune, 's', "{n}s", subchar },
+	{ 1u << Modenormal, Keyrune, 'r', "r{c}", replbegin },
+	{ 1u << Modenormal, Keyrune, 'D', "{n}D", delend },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'C', "C", chgend },
+	{ 1u << Modenormal, Keyrune, 'S', "{n}S", sublinecmd },
 
 	/* paste */
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'p', "p", paste },
@@ -6602,6 +7016,7 @@ static const Move nvkeys[] = {
 
 	/* meta */
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'u', "u", undo },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, '.', ".", dotrepeat },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'q', "q", quit },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, ' ', " <leader>", leader },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 0x17, "<C-w>", ctrlw },
@@ -6641,6 +7056,8 @@ nvkey(Eek *e, const Key *k)
 			e->ypending = 0;
 			e->fpending = 0;
 			e->fcount = 0;
+			e->rpending = 0;
+			e->rcount = 0;
 			e->tipending = 0;
 			e->vtipending = 0;
 			e->lastnormalrune = 0;
@@ -6659,6 +7076,8 @@ nvkey(Eek *e, const Key *k)
 		e->ypending = 0;
 		e->fpending = 0;
 		e->fcount = 0;
+		e->rpending = 0;
+		e->rcount = 0;
 		e->tipending = 0;
 		e->vtipending = 0;
 		e->lastnormalrune = 0;
@@ -6668,6 +7087,33 @@ nvkey(Eek *e, const Key *k)
 		e->opcount = 0;
 		if (e->mode == Modevisual)
 			setmode(e, Modenormal);
+		return 1;
+	}
+
+	if (e->rpending) {
+		e->rpending = 0;
+		if (k->kind == Keyrune) {
+			long rr;
+			long n;
+
+			rr = k->value;
+			n = e->rcount;
+			e->rcount = 0;
+			if (rr == '\n' || rr == '\r')
+				goto repldone;
+			if (rr == '\t')
+				replchars(e, rr, n);
+			else if (rr >= 0x20)
+				replchars(e, rr, n);
+		}
+	repldone:
+		e->count = 0;
+		e->opcount = 0;
+		e->lastnormalrune = 0;
+		e->lastmotioncount = 0;
+		e->seqcount = 0;
+		if (e->mode == Modenormal)
+			normalfixcursor(e);
 		return 1;
 	}
 
@@ -6717,6 +7163,8 @@ nvkey(Eek *e, const Key *k)
 				e->cx = origcx;
 				goto finddone;
 			}
+			e->lastfindmode = mode;
+			e->lastfindr = k->value;
 			posend = nextutf8(e, e->cy, pos);
 			curend = nextutf8(e, e->cy, origcx);
 
@@ -7030,6 +7478,15 @@ nvkey(Eek *e, const Key *k)
 			setmode(e, Modenormal);
 			goto afterkey;
 		}
+		if (k->value == 'c' || k->value == 's' || k->value == 'S') {
+			long sy, sx, ey, ex;
+
+			vselbounds(e, &sy, &sx, &ey, &ex);
+			(void)delrange(e, sy, sx, ey, ex, 1);
+			e->vtipending = 0;
+			setmode(e, Modeinsert);
+			goto afterkey;
+		}
 	}
 
 	/* Count parsing (vim-like): digits accumulate unless leading '0'. */
@@ -7230,7 +7687,10 @@ main(int argc, char **argv)
 			if (keyread(&e.t, &kev.k) < 0)
 				break;
 			kev.nomap = 0;
+			kev.src = Keysrcuser;
 		}
+		if (kev.src == Keysrcdot && e.dotreplayleft > 0)
+			e.dotreplayleft--;
 		if (e.mode != Modeinsert)
 			e.undopending = 0;
 		if (e.msg[0] != 0 && e.mode != Modecmd)
@@ -7242,15 +7702,33 @@ main(int argc, char **argv)
 				continue;
 		}
 
+		/* '.' recording: start on change keys in NORMAL; record effective keys. */
+		if (e.dotreplayleft <= 0) {
+			if (!e.dotrec && e.mode == Modenormal && kev.k.kind == Keyrune && dotstartkey(kev.k.value))
+				dotrecstart(&e);
+			if (e.dotrec) {
+				if (!(e.mode == Modenormal && kev.k.kind == Keyrune && kev.k.value == '.'))
+					dotrecadd(&e, &kev);
+			}
+		}
+
 		if (e.mode == Modecmd) {
 			(void)cmdkey(&e, &kev.k);
 			continue;
 		}
 		if (e.mode == Modeinsert) {
 			(void)inskey(&e, &kev.k);
-			continue;
+			goto afterdispatch;
 		}
 		(void)nvkey(&e, &kev.k);
+	afterdispatch:
+		;
+
+		if (e.dotrec) {
+			if (e.mode == Modenormal && !e.dpending && !e.cpending && !e.ypending &&
+			    !e.fpending && !e.rpending && !e.tipending && !e.vtipending)
+				dotrecsave(&e);
+		}
 		if (e.quit)
 			break;
 	}

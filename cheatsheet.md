@@ -99,7 +99,11 @@ Enter INSERT:
 
 Change:
 
+- Substitute character(s): `s` / `ns` (deletes and enters INSERT)
+- Replace character(s): `r{char}` (count-aware)
 - Change to end-of-line: `C` (also yanks the deleted text)
+- Delete to end-of-line: `D` (also yanks the deleted text)
+- Substitute line(s): `S` / `nS` (like `cc`)
 - Change inside delimiter pair: `ci{char}` (example: `ci(`, `ci"`, `ci'`)
 
 ---
@@ -145,6 +149,7 @@ Notes:
 - While in VISUAL:
   - Yank selection: `y`
   - Delete selection (and yank): `d`
+  - Change selection (and yank, then enter INSERT): `c` (also `s` / `S`)
 
 Delimiter text objects in VISUAL:
 
@@ -160,6 +165,12 @@ Command-line with VISUAL selection:
 ## Undo
 
 - Undo last change: `u`
+
+---
+
+## Repeat
+
+- Repeat last change: `.` (also works for VISUAL edits)
 
 ---
 

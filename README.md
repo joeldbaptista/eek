@@ -319,25 +319,12 @@ eek is intentionally minimal, but there are several improvements that fit the â€
 	- With snapshot-based undo, redo is typically implemented as a second stack.
 	- New edits should clear the redo stack (like most editors).
 
-- Repeat last change (`.`)
-	- Record the last *editing* action (not just motion) and replay it.
-	- This is one of the highest leverage vi features once operators/motions exist.
-
-- More linewise operators
-	- `D` as `d$` (delete to end-of-line) to mirror the existing `C`.
-	- `S` as `cc` (change entire line) for quick rewriting.
-
-- Replace/substitute primitives
-	- `r{char}`: replace the character under the cursor (count-aware).
-	- `s`: delete one character and enter INSERT (similar to `cl`).
-
 - Indentation
 	- `>>` / `<<` (and counts) for simple line indentation shifting.
 	- Keep it compile-time configurable (tabs vs spaces) to stay suckless-style.
 
 ### Motions and text objects
 
-- More character find motions: `F{c}`, `t{c}`, `T{c}` plus repeats `;` and `,`.
 - Better line navigation: `^` (first non-blank), `H`/`M`/`L` (top/middle/bottom of the viewport).
 - Paragraph movement: `{` and `}` (blank-line separated).
 - Word text objects: `iw` / `aw` so `diw`, `ciw`, `yiw` become available.
