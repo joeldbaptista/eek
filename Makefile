@@ -5,6 +5,7 @@ include config.mk
 BIN = eek
 OBJ = \
 	eek.o \
+	motion.o \
 	buf.o \
 	term.o \
 	key.o \
@@ -22,7 +23,7 @@ options:
 config.h:
 	cp config.def.h config.h
 
-${OBJ}: config.h eek.h util.h buf.h
+${OBJ}: config.h eek.h eek_internal.h util.h buf.h
 
 ${BIN}: ${OBJ}
 	${CC} ${LDFLAGS} -o $@ ${OBJ}
