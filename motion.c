@@ -2,6 +2,17 @@
 
 #include "eek_internal.h"
 
+/*
+ * utf8dec1 decodes a single UTF-8 codepoint from s.
+ *
+ * Parameters:
+ *  - s: pointer to bytes.
+ *  - n: number of bytes available at s.
+ *  - adv: optional out-parameter set to the number of bytes consumed.
+ *
+ * Returns:
+ *  - decoded rune value, or -1 if input is empty.
+ */
 long
 utf8dec1(const char *s, long n, long *adv)
 {
@@ -61,6 +72,16 @@ bad:
 	return (long)c;
 }
 
+/*
+ * utf8enc encodes rune r into UTF-8 bytes stored at s.
+ *
+ * Parameters:
+ *  - r: rune value.
+ *  - s: output buffer (must have space for up to 4 bytes).
+ *
+ * Returns:
+ *  - number of bytes written (1..4).
+ */
 long
 utf8enc(long r, char *s)
 {
@@ -96,6 +117,9 @@ utf8enc(long r, char *s)
 	return 3;
 }
 
+/*
+ * clamp clamps v into [lo, hi].
+ */
 long
 clamp(long v, long lo, long hi)
 {
@@ -106,6 +130,9 @@ clamp(long v, long lo, long hi)
 	return v;
 }
 
+/*
+ * linelen returns the length in bytes of line y.
+ */
 long
 linelen(Eek *e, long y)
 {
@@ -117,6 +144,9 @@ linelen(Eek *e, long y)
 	return l->n;
 }
 
+/*
+ * prevutf8 returns the previous UTF-8 codepoint boundary at or before at.
+ */
 long
 prevutf8(Eek *e, long y, long at)
 {
@@ -139,6 +169,9 @@ prevutf8(Eek *e, long y, long at)
 	return i;
 }
 
+/*
+ * nextutf8 returns the next UTF-8 codepoint boundary after at.
+ */
 long
 nextutf8(Eek *e, long y, long at)
 {
@@ -169,12 +202,18 @@ nextutf8(Eek *e, long y, long at)
 	return at + n;
 }
 
+/*
+ * isws reports whether c is considered whitespace by motions.
+ */
 int
 isws(long c)
 {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
 
+/*
+ * isword reports whether c is considered a "word" character for word motions.
+ */
 int
 isword(long c)
 {
@@ -195,6 +234,10 @@ isword(long c)
 	return 0;
 }
 
+/*
+ * ispunctword reports whether c is considered punctuation for "punctuation
+ * word" motions.
+ */
 int
 ispunctword(long c)
 {
@@ -207,6 +250,9 @@ ispunctword(long c)
 	return !isword(c);
 }
 
+/*
+ * peekbyte returns the byte value at (y, at) or -1 if out of range.
+ */
 long
 peekbyte(Eek *e, long y, long at)
 {
@@ -220,18 +266,27 @@ peekbyte(Eek *e, long y, long at)
 	return (unsigned char)l->s[at];
 }
 
+/*
+ * movel moves the cursor left by one UTF-8 codepoint.
+ */
 void
 movel(Eek *e)
 {
 	e->cx = prevutf8(e, e->cy, e->cx);
 }
 
+/*
+ * mover moves the cursor right by one UTF-8 codepoint.
+ */
 void
 mover(Eek *e)
 {
 	e->cx = nextutf8(e, e->cy, e->cx);
 }
 
+/*
+ * moveu moves the cursor up one line, clamping to file bounds.
+ */
 void
 moveu(Eek *e)
 {
@@ -239,6 +294,9 @@ moveu(Eek *e)
 	e->cx = clamp(e->cx, 0, linelen(e, e->cy));
 }
 
+/*
+ * moved moves the cursor down one line, clamping to file bounds.
+ */
 void
 moved(Eek *e)
 {
@@ -246,6 +304,9 @@ moved(Eek *e)
 	e->cx = clamp(e->cx, 0, linelen(e, e->cy));
 }
 
+/*
+ * movew implements the vi-like 'w' motion using simple word classes.
+ */
 void
 movew(Eek *e)
 {
@@ -306,6 +367,9 @@ movew(Eek *e)
 	}
 }
 
+/*
+ * moveb implements the vi-like 'b' motion (backward word).
+ */
 void
 moveb(Eek *e)
 {
@@ -367,6 +431,13 @@ moveb(Eek *e)
 	}
 }
 
+/*
+ * findfwd moves the cursor to the next occurrence of rune r on the current
+ * line, searching forward.
+ *
+ * Returns:
+ *  - 0 if a match is found and the cursor is moved, -1 otherwise.
+ */
 int
 findfwd(Eek *e, long r, long n)
 {
@@ -406,6 +477,13 @@ findfwd(Eek *e, long r, long n)
 	return -1;
 }
 
+/*
+ * findbwd moves the cursor to the previous occurrence of rune r on the current
+ * line, searching backward.
+ *
+ * Returns:
+ *  - 0 if a match is found and the cursor is moved, -1 otherwise.
+ */
 int
 findbwd(Eek *e, long r, long n)
 {
