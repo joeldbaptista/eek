@@ -32,7 +32,9 @@ Mode switching:
 
 - Enter INSERT: `i`, `a`, `A`, `o`, `O`
 - Leave INSERT: `Esc`
-- Toggle VISUAL: `v`
+- Character-wise VISUAL: `v`
+- Linewise VISUAL: `V`
+- Block/column (vertical) VISUAL: `Ctrl-v`
 - Enter command-line:
   - `:` (ex commands)
   - `/` (search prompt)
@@ -145,11 +147,18 @@ Notes:
 
 ## VISUAL mode
 
-- Enter/exit VISUAL: `v`
+- Character-wise VISUAL: `v`
+- Linewise VISUAL: `V`
+- Block/column (vertical) VISUAL: `Ctrl-v`
 - While in VISUAL:
   - Yank selection: `y`
   - Delete selection (and yank): `d`
   - Change selection (and yank, then enter INSERT): `c` (also `s` / `S`)
+
+Block/column VISUAL extras:
+
+- Block insert: select a block with `Ctrl-v`, press `I`, type text, then `Esc`.
+  - The typed text is inserted on every selected line at the block's left edge.
 
 Delimiter text objects in VISUAL:
 

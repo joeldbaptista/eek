@@ -17,12 +17,6 @@ static volatile sig_atomic_t needresize;
 
 /*
  * onwinch handles SIGWINCH (terminal resize) by setting a flag.
- *
- * Parameters:
- *  sig: signal number (unused).
- *
- * Returns:
- *  None.
  */
 static void
 onwinch(int sig)
@@ -33,12 +27,6 @@ onwinch(int sig)
 
 /*
  * onexitrestore is an atexit(3) handler that restores terminal settings.
- *
- * Parameters:
- *  None.
- *
- * Returns:
- *  None.
  */
 static void
 onexitrestore(void)
@@ -52,9 +40,6 @@ onexitrestore(void)
  *
  * Parameters:
  *  t: terminal state to initialize.
- *
- * Returns:
- *  None.
  */
 void
 terminit(Term *t)
@@ -88,6 +73,9 @@ terminit(Term *t)
 	termgetwinsz(t);
 }
 
+/*
+ * termbufensure ensures that the terminal output buffer has at least need bytes.
+ */
 static void
 termbufensure(Term *t, long need)
 {
@@ -152,9 +140,6 @@ termrepeat(Term *t, char c, int n)
 /*
  * termresized reports whether a SIGWINCH has occurred since the last call.
  *
- * Parameters:
- *  None.
- *
  * Returns:
  *  1 if a resize was observed, 0 otherwise.
  */
@@ -189,9 +174,6 @@ termrestore(void)
  *
  * Parameters:
  *  t: terminal state to update.
- *
- * Returns:
- *  None.
  */
 void
 termgetwinsz(Term *t)
@@ -209,9 +191,6 @@ termgetwinsz(Term *t)
  *
  * Parameters:
  *  t: terminal state (currently unused).
- *
- * Returns:
- *  None.
  */
 void
 termclear(Term *t)
@@ -247,9 +226,6 @@ termmoveto(Term *t, int r, int c)
  *
  * Parameters:
  *  t: terminal state (currently unused).
- *
- * Returns:
- *  None.
  */
 void
 termflush(Term *t)

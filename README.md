@@ -66,6 +66,26 @@ Configuration lives in `config.h`.
 
 eek implements a small subset of vi/ex style command-line commands.
 
+## VISUAL selection
+
+eek supports three selection styles:
+
+- Character-wise selection: `v`
+- Linewise selection: `V`
+- Block/column (vertical) selection: `Ctrl-v`
+
+While in VISUAL, common operators apply to the selection:
+
+- `y` yank
+- `d` delete (also yanks)
+- `c` change (delete + enter INSERT)
+
+Block/column insert:
+
+- In block VISUAL (`Ctrl-v`), press `I` to enter a block insert.
+- Type the text to insert, then press `Esc`.
+- The inserted text is applied to every line in the selected block at the block's left edge.
+
 ### Windows (`:split`, `:vsplit`)
 
 - `:split` creates a horizontal split.

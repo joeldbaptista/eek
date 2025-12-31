@@ -59,6 +59,9 @@ struct Win {
 	long coloff;     /* Leftmost visible column (render column scroll offset). */
 	long vax;        /* VISUAL anchor x (byte offset). */
 	long vay;        /* VISUAL anchor y (line index). */
+	int vmode;       /* VISUAL selection kind (Visualchar/Visualblock). */
+	long vbrx;       /* VISUAL block anchor render column (virtual). */
+	long vrx;        /* VISUAL block cursor render column (virtual). */
 	long vtipending; /* VISUAL pending text-object modifier. */
 };
 
@@ -139,6 +142,12 @@ enum {
 	Modevisual, /* VISUAL mode: selection-based operations. */
 };
 
+/* VISUAL selection kinds. */
+enum {
+	Visualchar,  /* Character-wise selection (like 'v'). */
+	Visualblock, /* Column-wise (block) selection. */
+};
+
 struct Eek {
 	Term t;              /* Terminal I/O state and dimensions. */
 	Buf b;               /* Text buffer (array of lines). */
@@ -178,7 +187,17 @@ struct Eek {
 	long tiop;           /* Text-object operator that is pending ('d' or 'c'). */
 	long vax;            /* VISUAL anchor x (byte offset). */
 	long vay;            /* VISUAL anchor y (line index). */
+	int vmode;           /* VISUAL selection kind (Visualchar/Visualblock). */
+	long vbrx;           /* VISUAL block anchor render column (virtual). */
+	long vrx;            /* VISUAL block cursor render column (virtual). */
 	long vtipending;     /* VISUAL pending text-object modifier. */
+	int blockins;        /* Non-zero while doing VISUAL block insert (I). */
+	long blocky0;        /* Block insert: first line index (inclusive). */
+	long blocky1;        /* Block insert: last line index (inclusive). */
+	long blockrx0;       /* Block insert: left edge render column. */
+	char *blockbuf;      /* Block insert typed bytes to replicate. */
+	long blockn;         /* Block insert length in bytes. */
+	long blockcap;       /* Block insert capacity in bytes. */
 	Node *layout;        /* Window layout tree (leaves are windows). */
 	Win *curwin;         /* Active window (mirrored into cx/cy/rowoff/v* fields). */
 	char cmd[256];       /* Command-line buffer (for ':' and '/' prompts). */

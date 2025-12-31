@@ -40,6 +40,7 @@ static void wordtarget(Eek *e, long *ty, long *tx);
 static void endwordtarget(Eek *e, long *ty, long *tx);
 static void setmode(Eek *e, int mode);
 static int yankrange(Eek *e, long y0, long x0, long y1, long x1);
+static int yankblock(Eek *e, long y0, long y1, long rx0, long rx1);
 static int delimpair(long c, char *open, char *close);
 static int findopen(Eek *e, char open, char close, long *oy, long *ox);
 static int findclosefrom(Eek *e, long sy, long sx, char open, char close, long *cy, long *cx);
@@ -83,6 +84,17 @@ static void undofree(Eek *e);
 static void undopop(Eek *e);
 
 static void normalfixcursor(Eek *e);
+
+static long rxfromcx(Eek *e, long y, long cx);
+static long cxfromrx(Eek *e, long y, long rx);
+static void vselblockbounds(Eek *e, long *y0, long *y1, long *rx0, long *rx1);
+static int invselblock(Eek *e, long y, long rx);
+static int delblock(Eek *e, long y0, long y1, long rx0, long rx1, int yank);
+
+static void blockclear(Eek *e);
+static int blockappend(Eek *e, const char *s, long n);
+static void blockpop(Eek *e);
+static void blockapplyinsert(Eek *e);
 
 static int feedpop(Eek *e, KeyEvent *ev);
 static int feedpushfront(Eek *e, const KeyEvent *ev);
@@ -1243,6 +1255,67 @@ vselbounds(Eek *e, long *sy, long *sx, long *ey, long *ex)
 	*ex = nextutf8(e, by, bx);
 }
 
+static void
+vselblockbounds(Eek *e, long *y0, long *y1, long *rx0, long *rx1)
+{
+	long ay, by;
+	long arx, brx;
+	long t;
+
+	if (y0)
+		*y0 = 0;
+	if (y1)
+		*y1 = 0;
+	if (rx0)
+		*rx0 = 0;
+	if (rx1)
+		*rx1 = 0;
+	if (e == nil)
+		return;
+	if (e->mode != Modevisual && !(e->mode == Modecmd && e->cmdkeepvisual))
+		return;
+
+	ay = e->vay;
+	by = e->cy;
+	if (ay > by) {
+		t = ay;
+		ay = by;
+		by = t;
+	}
+	if (ay < 0)
+		ay = 0;
+	if (by < 0)
+		by = 0;
+	if (e->b.nline <= 0)
+		return;
+	if (ay >= e->b.nline)
+		ay = e->b.nline - 1;
+	if (by >= e->b.nline)
+		by = e->b.nline - 1;
+
+	arx = rxfromcx(e, e->vay, e->vax);
+	if (e->vmode == Visualblock)
+		brx = e->vrx;
+	else
+		brx = rxfromcx(e, e->cy, e->cx);
+	if (e->vmode == Visualblock)
+		arx = e->vbrx;
+	if (arx > brx) {
+		t = arx;
+		arx = brx;
+		brx = t;
+	}
+
+	if (y0)
+		*y0 = ay;
+	if (y1)
+		*y1 = by;
+	if (rx0)
+		*rx0 = arx;
+	if (rx1)
+		*rx1 = brx;
+}
+
 /*
  * invsel reports whether the byte position (y, x) lies inside the current
  * VISUAL selection.
@@ -1271,6 +1344,22 @@ invsel(Eek *e, long y, long x)
 	if (y == ey)
 		return x < ex;
 	return 1;
+}
+
+static int
+invselblock(Eek *e, long y, long rx)
+{
+	long y0, y1;
+	long rx0, rx1;
+
+	if (e == nil)
+		return 0;
+	if (e->mode != Modevisual && !(e->mode == Modecmd && e->cmdkeepvisual))
+		return 0;
+	vselblockbounds(e, &y0, &y1, &rx0, &rx1);
+	if (y < y0 || y > y1)
+		return 0;
+	return rx >= rx0 && rx <= rx1;
 }
 
 /*
@@ -1706,6 +1795,87 @@ yappend(Eek *e, const char *s, long n)
 	return 0;
 }
 
+static void
+blockclear(Eek *e)
+{
+	if (e == nil)
+		return;
+	free(e->blockbuf);
+	e->blockbuf = nil;
+	e->blockn = 0;
+	e->blockcap = 0;
+}
+
+static int
+blockappend(Eek *e, const char *s, long n)
+{
+	char *p;
+	long ncap;
+
+	if (e == nil)
+		return -1;
+	if (s == nil || n <= 0)
+		return 0;
+	if (e->blockn + n > e->blockcap) {
+		ncap = e->blockcap > 0 ? e->blockcap * 2 : 64;
+		while (ncap < e->blockn + n)
+			ncap *= 2;
+		p = realloc(e->blockbuf, (size_t)ncap);
+		if (p == nil)
+			return -1;
+		e->blockbuf = p;
+		e->blockcap = ncap;
+	}
+	memcpy(e->blockbuf + e->blockn, s, (size_t)n);
+	e->blockn += n;
+	return 0;
+}
+
+static void
+blockpop(Eek *e)
+{
+	long i;
+
+	if (e == nil)
+		return;
+	if (e->blockn <= 0)
+		return;
+	i = e->blockn - 1;
+	while (i > 0 && ((unsigned char)e->blockbuf[i] & 0xc0) == 0x80)
+		i--;
+	e->blockn = i;
+}
+
+static void
+blockapplyinsert(Eek *e)
+{
+	long y;
+	Line *l;
+	long cx;
+
+	if (e == nil)
+		return;
+	if (!e->blockins)
+		return;
+	if (e->blockn <= 0)
+		return;
+	if (e->blocky1 <= e->blocky0)
+		return;
+
+	for (y = e->blocky0 + 1; y <= e->blocky1; y++) {
+		l = bufgetline(&e->b, y);
+		if (l == nil)
+			continue;
+		cx = cxfromrx(e, y, e->blockrx0);
+		if (cx < 0)
+			cx = 0;
+		if (cx > l->n)
+			cx = l->n;
+		(void)lineinsert(l, cx, e->blockbuf, e->blockn);
+	}
+	e->dirty = 1;
+}
+
 /*
  * yankrange yanks a range of text into the yank register.
  * The range is interpreted in byte coordinates; multi-line yanks include '\n'
@@ -1984,6 +2154,9 @@ winload(Eek *e, Win *w)
 	e->coloff = w->coloff;
 	e->vax = w->vax;
 	e->vay = w->vay;
+	e->vmode = w->vmode;
+	e->vbrx = w->vbrx;
+	e->vrx = w->vrx;
 	e->vtipending = w->vtipending;
 }
 
@@ -2006,6 +2179,9 @@ winstore(Eek *e)
 	w->coloff = e->coloff;
 	w->vax = e->vax;
 	w->vay = e->vay;
+	w->vmode = e->vmode;
+	w->vbrx = e->vbrx;
+	w->vrx = e->vrx;
 	w->vtipending = e->vtipending;
 }
 
@@ -2758,6 +2934,164 @@ rxfromcx(Eek *e, long y, long cx)
 		i = nextutf8(e, y, i);
 	}
 	return tx;
+}
+
+/*
+ * cxfromrx converts a render column (rx) to a byte offset (cx), expanding tabs.
+ *
+ * The returned cx is the byte offset of the character that occupies rx.
+ * If rx is past end-of-line, returns l->n.
+ */
+static long
+cxfromrx(Eek *e, long y, long rx)
+{
+	Line *l;
+	long i;
+	long tx;
+	unsigned char c;
+	long w;
+
+	if (e == nil)
+		return 0;
+	l = bufgetline(&e->b, y);
+	if (l == nil)
+		return 0;
+	if (rx <= 0)
+		return 0;
+
+	tx = 0;
+	for (i = 0; i < l->n; ) {
+		if (tx >= rx)
+			return i;
+		c = (unsigned char)l->s[i];
+		if (c == '\t') {
+			w = TABSTOP - (tx % TABSTOP);
+			if (tx + w > rx)
+				return i;
+			tx += w;
+			i++;
+			continue;
+		}
+		tx++;
+		i = nextutf8(e, y, i);
+	}
+	return l->n;
+}
+
+static int
+yankblock(Eek *e, long y0, long y1, long rx0, long rx1)
+{
+	Line *l;
+	long y;
+	long cx0, cx1;
+	long t;
+
+	if (e == nil)
+		return -1;
+	if (y1 < y0) {
+		t = y0;
+		y0 = y1;
+		y1 = t;
+	}
+	if (rx1 < rx0) {
+		t = rx0;
+		rx0 = rx1;
+		rx1 = t;
+	}
+	if (y0 < 0)
+		y0 = 0;
+	if (y1 >= e->b.nline)
+		y1 = e->b.nline - 1;
+	if (y0 > y1)
+		return 0;
+
+	yclear(e);
+	e->yline = 0;
+	for (y = y0; y <= y1; y++) {
+		l = bufgetline(&e->b, y);
+		if (l == nil)
+			break;
+		cx0 = cxfromrx(e, y, rx0);
+		cx1 = cxfromrx(e, y, rx1 + 1);
+		if (cx0 < 0)
+			cx0 = 0;
+		if (cx1 < 0)
+			cx1 = 0;
+		if (cx0 > l->n)
+			cx0 = l->n;
+		if (cx1 > l->n)
+			cx1 = l->n;
+		if (cx1 > cx0) {
+			if (yappend(e, l->s + cx0, cx1 - cx0) < 0)
+				return -1;
+		}
+		if (y < y1) {
+			if (yappend(e, "\n", 1) < 0)
+				return -1;
+		}
+	}
+	return 0;
+}
+
+static int
+delblock(Eek *e, long y0, long y1, long rx0, long rx1, int yank)
+{
+	Line *l;
+	long y;
+	long cx0, cx1;
+	long t;
+
+	if (e == nil)
+		return -1;
+	if (y1 < y0) {
+		t = y0;
+		y0 = y1;
+		y1 = t;
+	}
+	if (rx1 < rx0) {
+		t = rx0;
+		rx0 = rx1;
+		rx1 = t;
+	}
+	if (y0 < 0)
+		y0 = 0;
+	if (y1 >= e->b.nline)
+		y1 = e->b.nline - 1;
+	if (y0 > y1)
+		return 0;
+
+	if (undopush(e) < 0)
+		return -1;
+
+	if (yank)
+		(void)yankblock(e, y0, y1, rx0, rx1);
+
+	for (y = y0; y <= y1; y++) {
+		l = bufgetline(&e->b, y);
+		if (l == nil)
+			continue;
+		cx0 = cxfromrx(e, y, rx0);
+		cx1 = cxfromrx(e, y, rx1 + 1);
+		if (cx0 < 0)
+			cx0 = 0;
+		if (cx1 < 0)
+			cx1 = 0;
+		if (cx0 > l->n)
+			cx0 = l->n;
+		if (cx1 > l->n)
+			cx1 = l->n;
+		if (cx1 > cx0) {
+			if (linedelrange(l, cx0, cx1 - cx0) < 0)
+				return -1;
+			e->dirty = 1;
+		}
+	}
+
+	e->cy = y0;
+	e->cx = cxfromrx(e, y0, rx0);
+	if (e->cx > linelen(e, e->cy))
+		e->cx = linelen(e, e->cy);
+	return 0;
 }
 
 /*
@@ -4506,7 +4840,11 @@ draw(Eek *e)
 						int openangle;
 						unsigned char c, n1;
 
-						wantinv = invsel(e, filerow, i);
+						wantinv = 0;
+						if (e->vmode == Visualblock)
+							wantinv = invselblock(e, filerow, tx);
+						else
+							wantinv = invsel(e, filerow, i);
 						basehl = preproc ? Hlpreproc : Hlnone;
 						wanthl = basehl;
 						openstring = 0;
@@ -4591,6 +4929,16 @@ draw(Eek *e)
 							nsp = TABSTOP - (tx % TABSTOP);
 							while (nsp-- > 0 && rx < collim) {
 								if (tx >= coloff && rx < collim) {
+									if (e->vmode == Visualblock) {
+										int winv;
+
+										winv = invselblock(e, filerow, tx);
+										if (winv != curinv || wanthl != curhl) {
+											drawattrs(e, winv, wanthl);
+											curinv = winv;
+											curhl = wanthl;
+										}
+									}
 									termwrite(&e->t, " ", 1);
 									rx++;
 								}
@@ -4650,10 +4998,34 @@ draw(Eek *e)
 						tx++;
 						i += n;
 					}
-					if (curinv || curhl != Hlnone)
-						termwrite(&e->t, "\x1b[m", 3);
-					while (rx++ < collim)
-						termwrite(&e->t, " ", 1);
+					if (e->vmode == Visualblock) {
+						int winv;
+						long txcur;
+
+						/* Trailing fill: spaces are real columns in block selection. */
+						if (curhl != Hlnone) {
+							drawattrs(e, curinv, Hlnone);
+							curhl = Hlnone;
+						}
+						while (rx < collim) {
+							txcur = coloff + (rx - gutter);
+							winv = invselblock(e, filerow, txcur);
+							if (winv != curinv) {
+								drawattrs(e, winv, Hlnone);
+								curinv = winv;
+								curhl = Hlnone;
+							}
+							termwrite(&e->t, " ", 1);
+							rx++;
+						}
+						if (curinv)
+							termwrite(&e->t, "\x1b[m", 3);
+					} else {
+						if (curinv || curhl != Hlnone)
+							termwrite(&e->t, "\x1b[m", 3);
+						while (rx++ < collim)
+							termwrite(&e->t, " ", 1);
+					}
 				}
 				continue;
 			}
@@ -5435,6 +5807,11 @@ insesc(Eek *e, Args *a)
 	(void)a;
 	if (e == nil)
 		return 0;
+	if (e->blockins) {
+		blockapplyinsert(e);
+		e->blockins = 0;
+		blockclear(e);
+	}
 	if (e->cx > 0)
 		e->cx = prevutf8(e, e->cy, e->cx);
 	setmode(e, Modenormal);
@@ -5492,6 +5869,8 @@ static int
 insbs(Eek *e, Args *a)
 {
 	(void)a;
+	if (e && e->blockins)
+		blockpop(e);
 	(void)delback(e);
 	return 0;
 }
@@ -5500,6 +5879,10 @@ static int
 insenter(Eek *e, Args *a)
 {
 	(void)a;
+	if (e && e->blockins) {
+		setmsg(e, "Block insert: no newline");
+		return 0;
+	}
 	(void)insertnl(e);
 	return 0;
 }
@@ -5515,18 +5898,26 @@ insrune(Eek *e, Args *a)
 		return 0;
 	r = argsat(a, 0, 0);
 	if (r == '\n') {
+		if (e && e->blockins) {
+			setmsg(e, "Block insert: no newline");
+			return 0;
+		}
 		(void)insertnl(e);
 		return 0;
 	}
 	if (r == '\t') {
 		s[0] = '\t';
 		(void)insertbytes(e, s, 1);
+		if (e->blockins)
+			(void)blockappend(e, s, 1);
 		return 0;
 	}
 	if (r < 0x20)
 		return 0;
 	n = utf8enc(r, s);
 	(void)insertbytes(e, s, n);
+	if (e->blockins)
+		(void)blockappend(e, s, n);
 	return 0;
 }
 
@@ -5747,6 +6138,7 @@ vistoggle(Eek *e, Args *a)
 		e->tipending = 0;
 		e->vay = e->cy;
 		e->vax = e->cx;
+		e->vmode = Visualchar;
 		e->vtipending = 0;
 		setmode(e, Modevisual);
 	}
@@ -5775,7 +6167,58 @@ visline(Eek *e, Args *a)
 
 	e->vay = e->cy;
 	e->vax = 0;
+	e->vmode = Visualchar;
 	e->cx = linelen(e, e->cy);
+	setmode(e, Modevisual);
+
+	e->count = 0;
+	e->opcount = 0;
+	return 0;
+}
+
+static int
+visblock(Eek *e, Args *a)
+{
+	(void)a;
+	if (e == nil)
+		return 0;
+
+	/* If already in column-wise visual, toggle back to NORMAL. */
+	if (e->mode == Modevisual && e->vmode == Visualblock) {
+		e->dpending = 0;
+		e->cpending = 0;
+		e->ypending = 0;
+		e->fpending = 0;
+		e->fcount = 0;
+		e->rpending = 0;
+		e->rcount = 0;
+		e->tipending = 0;
+		e->vtipending = 0;
+		setmode(e, Modenormal);
+		e->vmode = Visualchar;
+		e->count = 0;
+		e->opcount = 0;
+		return 0;
+	}
+
+	/* Enter (or switch to) column-wise VISUAL selection. */
+	e->dpending = 0;
+	e->cpending = 0;
+	e->ypending = 0;
+	e->fpending = 0;
+	e->fcount = 0;
+	e->rpending = 0;
+	e->rcount = 0;
+	e->tipending = 0;
+	e->vtipending = 0;
+
+	if (e->mode != Modevisual) {
+		e->vay = e->cy;
+		e->vax = e->cx;
+	}
+	e->vmode = Visualblock;
+	e->vbrx = rxfromcx(e, e->vay, e->vax);
+	e->vrx = rxfromcx(e, e->cy, e->cx);
 	setmode(e, Modevisual);
 
 	e->count = 0;
@@ -5997,6 +6440,16 @@ openabove(Eek *e, Args *a)
 static int
 curleft(Eek *e, Args *a)
 {
+	long n;
+	if (e && e->mode == Modevisual && e->vmode == Visualblock) {
+		n = countval(e->count);
+		e->count = 0;
+		e->vrx -= n;
+		if (e->vrx < 0)
+			e->vrx = 0;
+		e->cx = cxfromrx(e, e->cy, e->vrx);
+		return 0;
+	}
 	(void)a;
 	repeat(e, movel, countval(e->count));
 	e->count = 0;
@@ -6006,6 +6459,14 @@ curleft(Eek *e, Args *a)
 static int
 curdown(Eek *e, Args *a)
 {
+	long n;
+	if (e && e->mode == Modevisual && e->vmode == Visualblock) {
+		n = countval(e->count);
+		e->count = 0;
+		e->cy = clamp(e->cy + n, 0, e->b.nline - 1);
+		e->cx = cxfromrx(e, e->cy, e->vrx);
+		return 0;
+	}
 	(void)a;
 	repeat(e, moved, countval(e->count));
 	e->count = 0;
@@ -6015,6 +6476,14 @@ curdown(Eek *e, Args *a)
 static int
 curup(Eek *e, Args *a)
 {
+	long n;
+	if (e && e->mode == Modevisual && e->vmode == Visualblock) {
+		n = countval(e->count);
+		e->count = 0;
+		e->cy = clamp(e->cy - n, 0, e->b.nline - 1);
+		e->cx = cxfromrx(e, e->cy, e->vrx);
+		return 0;
+	}
 	(void)a;
 	repeat(e, moveu, countval(e->count));
 	e->count = 0;
@@ -6024,6 +6493,16 @@ curup(Eek *e, Args *a)
 static int
 curright(Eek *e, Args *a)
 {
+	long n;
+	if (e && e->mode == Modevisual && e->vmode == Visualblock) {
+		n = countval(e->count);
+		e->count = 0;
+		e->vrx += n;
+		if (e->vrx < 0)
+			e->vrx = 0;
+		e->cx = cxfromrx(e, e->cy, e->vrx);
+		return 0;
+	}
 	(void)a;
 	repeat(e, mover, countval(e->count));
 	e->count = 0;
@@ -6303,6 +6782,7 @@ static const Move nvkeys[] = {
 	/* mode */
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'v', "v", vistoggle },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'V', "V", visline },
+	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 0x16, "<C-v>", visblock },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, ':', ":", exline },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, '/', "/", searchline },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'i', "i", insbefore },
@@ -6742,10 +7222,44 @@ nvkey(Eek *e, const Key *k)
 	}
 
 	/* Arrow key motions work regardless of counts. */
-	if (k->kind == Keyup) { moveu(e); return 1; }
-	if (k->kind == Keydown) { moved(e); return 1; }
-	if (k->kind == Keyleft) { movel(e); return 1; }
-	if (k->kind == Keyright) { mover(e); return 1; }
+	if (k->kind == Keyup) {
+		if (e->mode == Modevisual && e->vmode == Visualblock) {
+			e->cy = clamp(e->cy - 1, 0, e->b.nline - 1);
+			e->cx = cxfromrx(e, e->cy, e->vrx);
+			return 1;
+		}
+		moveu(e);
+		return 1;
+	}
+	if (k->kind == Keydown) {
+		if (e->mode == Modevisual && e->vmode == Visualblock) {
+			e->cy = clamp(e->cy + 1, 0, e->b.nline - 1);
+			e->cx = cxfromrx(e, e->cy, e->vrx);
+			return 1;
+		}
+		moved(e);
+		return 1;
+	}
+	if (k->kind == Keyleft) {
+		if (e->mode == Modevisual && e->vmode == Visualblock) {
+			e->vrx -= 1;
+			if (e->vrx < 0)
+				e->vrx = 0;
+			e->cx = cxfromrx(e, e->cy, e->vrx);
+			return 1;
+		}
+		movel(e);
+		return 1;
+	}
+	if (k->kind == Keyright) {
+		if (e->mode == Modevisual && e->vmode == Visualblock) {
+			e->vrx += 1;
+			e->cx = cxfromrx(e, e->cy, e->vrx);
+			return 1;
+		}
+		mover(e);
+		return 1;
+	}
 
 	if (k->kind != Keyrune)
 		return 0;
@@ -6763,47 +7277,89 @@ nvkey(Eek *e, const Key *k)
 
 	/* VISUAL extra keys: v, yi{obj}, di{obj} etc. */
 	if (e->mode == Modevisual) {
-		if (e->vtipending) {
+		if (e->vmode == Visualblock && k->value == 'I') {
+			long y0, y1, rx0, rx1;
+
+			vselblockbounds(e, &y0, &y1, &rx0, &rx1);
+			e->blockins = 1;
+			e->blocky0 = y0;
+			e->blocky1 = y1;
+			e->blockrx0 = rx0;
+			blockclear(e);
+
+			e->cy = y0;
+			e->cx = cxfromrx(e, y0, rx0);
+			setmode(e, Modeinsert);
+			e->vtipending = 0;
+			e->vmode = Visualchar;
+			goto afterkey;
+		}
+		if (e->vmode != Visualblock && e->vtipending) {
 			e->vtipending = 0;
 			(void)vselectinside(e, k->value);
 			goto afterkey;
 		}
-		if (k->value == 'i') {
+		if (e->vmode != Visualblock && k->value == 'i') {
 			e->vtipending = 1;
 			goto afterkey;
 		}
 		if (k->value == 'v') {
 			e->vtipending = 0;
 			setmode(e, Modenormal);
+			e->vmode = Visualchar;
 			goto afterkey;
 		}
 		if (k->value == 'y') {
-			long sy, sx, ey, ex;
+			if (e->vmode == Visualblock) {
+				long y0, y1, rx0, rx1;
 
-			vselbounds(e, &sy, &sx, &ey, &ex);
-			(void)yankrange(e, sy, sx, ey, ex);
+				vselblockbounds(e, &y0, &y1, &rx0, &rx1);
+				(void)yankblock(e, y0, y1, rx0, rx1);
+			} else {
+				long sy, sx, ey, ex;
+
+				vselbounds(e, &sy, &sx, &ey, &ex);
+				(void)yankrange(e, sy, sx, ey, ex);
+			}
 			setmsg(e, "yanked");
 			e->vtipending = 0;
 			setmode(e, Modenormal);
+			e->vmode = Visualchar;
 			goto afterkey;
 		}
 		if (k->value == 'd') {
-			long sy, sx, ey, ex;
+			if (e->vmode == Visualblock) {
+				long y0, y1, rx0, rx1;
 
-			vselbounds(e, &sy, &sx, &ey, &ex);
-			(void)delrange(e, sy, sx, ey, ex, 1);
+				vselblockbounds(e, &y0, &y1, &rx0, &rx1);
+				(void)delblock(e, y0, y1, rx0, rx1, 1);
+			} else {
+				long sy, sx, ey, ex;
+
+				vselbounds(e, &sy, &sx, &ey, &ex);
+				(void)delrange(e, sy, sx, ey, ex, 1);
+			}
 			setmsg(e, "deleted");
 			e->vtipending = 0;
 			setmode(e, Modenormal);
+			e->vmode = Visualchar;
 			goto afterkey;
 		}
 		if (k->value == 'c' || k->value == 's' || k->value == 'S') {
-			long sy, sx, ey, ex;
+			if (e->vmode == Visualblock) {
+				long y0, y1, rx0, rx1;
 
-			vselbounds(e, &sy, &sx, &ey, &ex);
-			(void)delrange(e, sy, sx, ey, ex, 1);
+				vselblockbounds(e, &y0, &y1, &rx0, &rx1);
+				(void)delblock(e, y0, y1, rx0, rx1, 1);
+			} else {
+				long sy, sx, ey, ex;
+
+				vselbounds(e, &sy, &sx, &ey, &ex);
+				(void)delrange(e, sy, sx, ey, ex, 1);
+			}
 			e->vtipending = 0;
 			setmode(e, Modeinsert);
+			e->vmode = Visualchar;
 			goto afterkey;
 		}
 	}
@@ -7071,6 +7627,10 @@ main(int argc, char **argv)
 	nodefree(e.layout);
 	mapfreeall(&e);
 	free(e.lastsearch);
+	free(e.blockbuf);
+	e.blockbuf = nil;
+	e.blockn = 0;
+	e.blockcap = 0;
 	setcursorshape(&e, Cursornormal);
 	termclear(&e.t);
 	termmoveto(&e.t, 0, 0);
