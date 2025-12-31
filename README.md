@@ -77,8 +77,12 @@ eek supports three selection styles:
 While in VISUAL, common operators apply to the selection:
 
 - `y` yank
-- `d` delete (also yanks)
-- `c` change (delete + enter INSERT)
+- `d` / `D` delete (also yanks)
+- `c` / `C` change (delete + enter INSERT)
+
+Pasting in VISUAL replaces the selection:
+
+- `p` / `P` delete the selection (without overwriting the yank buffer) and then paste.
 
 Block/column insert:
 

@@ -139,6 +139,10 @@ Paste:
 - Paste after cursor / below line: `p`
 - Paste before cursor / above line: `P`
 
+In VISUAL:
+
+- `p` / `P` replace the selection (delete selection, then paste; does not overwrite the yank buffer).
+
 Notes:
 
 - Deletes generally **yank** into the same register, so `p` can paste what you just deleted.
@@ -152,8 +156,9 @@ Notes:
 - Block/column (vertical) VISUAL: `Ctrl-v`
 - While in VISUAL:
   - Yank selection: `y`
-  - Delete selection (and yank): `d`
-  - Change selection (and yank, then enter INSERT): `c` (also `s` / `S`)
+  - Delete selection (and yank): `d` (also `D`)
+  - Change selection (and yank, then enter INSERT): `c` (also `C`, `s` / `S`)
+  - Paste replaces selection: `p` / `P`
 
 Block/column VISUAL extras:
 

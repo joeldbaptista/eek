@@ -7309,6 +7309,22 @@ nvkey(Eek *e, const Key *k)
 			e->vmode = Visualchar;
 			goto afterkey;
 		}
+		if (k->value == 'p' || k->value == 'P') {
+			if (e->vmode != Visualblock) {
+				long sy, sx, ey, ex;
+
+				vselbounds(e, &sy, &sx, &ey, &ex);
+				(void)delrange(e, sy, sx, ey, ex, 0);
+				setmode(e, Modenormal);
+				e->vmode = Visualchar;
+				e->vtipending = 0;
+				if (k->value == 'P')
+					(void)pastebefore(e, nil);
+				else
+					(void)paste(e, nil);
+				goto afterkey;
+			}
+		}
 		if (k->value == 'y') {
 			if (e->vmode == Visualblock) {
 				long y0, y1, rx0, rx1;
@@ -7327,7 +7343,7 @@ nvkey(Eek *e, const Key *k)
 			e->vmode = Visualchar;
 			goto afterkey;
 		}
-		if (k->value == 'd') {
+		if (k->value == 'd' || k->value == 'D') {
 			if (e->vmode == Visualblock) {
 				long y0, y1, rx0, rx1;
 
@@ -7345,7 +7361,7 @@ nvkey(Eek *e, const Key *k)
 			e->vmode = Visualchar;
 			goto afterkey;
 		}
-		if (k->value == 'c' || k->value == 's' || k->value == 'S') {
+		if (k->value == 'c' || k->value == 'C' || k->value == 's' || k->value == 'S') {
 			if (e->vmode == Visualblock) {
 				long y0, y1, rx0, rx1;
 
