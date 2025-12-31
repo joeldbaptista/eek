@@ -85,6 +85,7 @@ Block/column insert:
 - In block VISUAL (`Ctrl-v`), press `I` to enter a block insert.
 - Type the text to insert, then press `Esc`.
 - The inserted text is applied to every line in the selected block at the block's left edge.
+- Newlines are not supported during block insert.
 
 ### Windows (`:split`, `:vsplit`)
 
