@@ -7450,10 +7450,8 @@ nvkey(Eek *e, const Key *k)
 				setmode(e, Modenormal);
 				e->vmode = Visualchar;
 				e->vtipending = 0;
-				if (k->value == 'P')
-					(void)pastebefore(e, nil);
-				else
-					(void)paste(e, nil);
+				/* In VISUAL replace-paste, insert at the selection start. */
+				(void)pastebefore(e, nil);
 				goto afterkey;
 			}
 		}
