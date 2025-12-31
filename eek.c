@@ -1404,6 +1404,135 @@ vselectinside(Eek *e, long c)
 	return 0;
 }
 
+static int
+vsinnerword(Eek *e)
+{
+	Line *l;
+	long y;
+	long len;
+	long pos;
+	long adv;
+	long r;
+	int cls;
+	long x0, x1;
+
+	if (e == nil)
+		return -1;
+	y = e->cy;
+	l = bufgetline(&e->b, y);
+	if (l == nil)
+		return -1;
+	len = l->n;
+	if (len <= 0)
+		return -1;
+
+	pos = e->cx;
+	if (pos >= len)
+		pos = prevutf8(e, y, len);
+	if (pos < 0)
+		pos = 0;
+
+	/* Determine the word class at/near the cursor (word vs punct-word). */
+	r = (pos < len) ? utf8dec1(l->s + pos, len - pos, &adv) : -1;
+	cls = isword(r) ? 1 : (ispunctword(r) ? 2 : 0);
+	if (cls == 0) {
+		long p;
+
+		/* Try to find the next word on this line. */
+		p = pos;
+		for (;;) {
+			long np;
+
+			if (p >= len)
+				break;
+			r = utf8dec1(l->s + p, len - p, &adv);
+			cls = isword(r) ? 1 : (ispunctword(r) ? 2 : 0);
+			if (cls != 0) {
+				pos = p;
+				break;
+			}
+			np = nextutf8(e, y, p);
+			if (np <= p)
+				break;
+			p = np;
+		}
+
+		/* Otherwise, try to find a previous word on this line. */
+		if (cls == 0) {
+			p = pos;
+			for (;;) {
+				long pp;
+
+				if (p <= 0)
+					break;
+				pp = prevutf8(e, y, p);
+				if (pp >= p)
+					break;
+				p = pp;
+				r = utf8dec1(l->s + p, len - p, &adv);
+				cls = isword(r) ? 1 : (ispunctword(r) ? 2 : 0);
+				if (cls != 0) {
+					pos = p;
+					break;
+				}
+			}
+		}
+		if (cls == 0)
+			return -1;
+	}
+
+	/* Scan left to word start. */
+	x0 = pos;
+	for (;;) {
+		long px;
+		long pr;
+
+		px = prevutf8(e, y, x0);
+		if (px >= x0)
+			break;
+		pr = utf8dec1(l->s + px, len - px, &adv);
+		if (cls == 1) {
+			if (!isword(pr))
+				break;
+		} else {
+			if (!ispunctword(pr))
+				break;
+		}
+		x0 = px;
+	}
+
+	/* Scan right to exclusive word end. */
+	x1 = nextutf8(e, y, pos);
+	for (;;) {
+		long nr;
+		long nx;
+
+		if (x1 >= len)
+			break;
+		nr = utf8dec1(l->s + x1, len - x1, &adv);
+		if (cls == 1) {
+			if (!isword(nr))
+				break;
+		} else {
+			if (!ispunctword(nr))
+				break;
+		}
+		nx = nextutf8(e, y, x1);
+		if (nx <= x1)
+			break;
+		x1 = nx;
+	}
+
+	if (x1 <= x0)
+		return 0;
+
+	e->vay = y;
+	e->vax = x0;
+	e->cy = y;
+	e->cx = prevutf8(e, y, x1);
+	return 0;
+}
+
 /*
  * delimpair maps a delimiter character to its opening and closing pair.
  *
@@ -7296,7 +7425,10 @@ nvkey(Eek *e, const Key *k)
 		}
 		if (e->vmode != Visualblock && e->vtipending) {
 			e->vtipending = 0;
-			(void)vselectinside(e, k->value);
+			if (k->value == 'w')
+				(void)vsinnerword(e);
+			else
+				(void)vselectinside(e, k->value);
 			goto afterkey;
 		}
 		if (e->vmode != Visualblock && k->value == 'i') {

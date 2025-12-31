@@ -80,6 +80,10 @@ While in VISUAL, common operators apply to the selection:
 - `d` / `D` delete (also yanks)
 - `c` / `C` change (delete + enter INSERT)
 
+VISUAL text objects:
+
+- `iw` select inside word (`viw`)
+
 Pasting in VISUAL replaces the selection:
 
 - `p` / `P` delete the selection (without overwriting the yank buffer) and then paste.

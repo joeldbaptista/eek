@@ -169,6 +169,10 @@ Delimiter text objects in VISUAL:
 
 - Select inside delimiter: `i{char}` (example: `i(`, `i{`, `i"`, `i'`)
 
+Word text objects in VISUAL:
+
+- Select inside word: `iw` (example: `viw`)
+
 Command-line with VISUAL selection:
 
 - Press `:` in VISUAL to open the command line while keeping the selection highlighted.
