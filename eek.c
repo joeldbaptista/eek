@@ -4891,6 +4891,9 @@ draw(Eek *e)
 	if (e == nil)
 		return;
 
+	/* Keep the line-gap near the cursor for fast local line edits. */
+	buftrackgap(&e->b, e->cy);
+
 	termwrite(&e->t, "\x1b[?25l", 6);
 	textrows = e->t.row - 1;
 	if (textrows < 1)

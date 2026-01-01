@@ -13,19 +13,25 @@ struct Line {
 
 struct Buf {
 	Line *line;  /* Dynamic array of lines. */
-	size_t nline; /* Number of lines currently in use. */
-	size_t cap;   /* Allocated capacity of line[] in elements. */
+	size_t nline; /* Number of lines currently in use (excluding the gap). */
+	size_t cap;   /* Allocated capacity of line[] in elements (including the gap). */
+	size_t start; /* Gap start index in line[] (elements). */
+	size_t end;   /* Gap end index in line[] (elements). */
 };
 
 /*
  * Notes (STL-style container semantics):
  *
  *  - Pointer/reference invalidation: any operation that can reallocate or
- *    shift the underlying line array (e.g. bufinsertline, bufdelline,
+	 *    move the line gap, reallocate, or shift storage (e.g. bufinsertline, bufdelline,
  *    bufload, bufcopy, buffree) may invalidate pointers returned by
  *    bufgetline.
+	 *    buftrackgap also moves the gap and may invalidate pointers.
  *
- *  - Complexity: bufinsertline/bufdelline are O(nline) due to shifting.
+	 *  - Complexity:
+	 *      * bufgetline is O(1).
+	 *      * bufinsertline/bufdelline are amortized O(1) when edits are near the current
+	 *        gap, and O(nline) worst-case when the gap must move far.
  *
  *  - Failure guarantees:
  *      * bufinsertline provides a strong guarantee (on failure, Buf is
@@ -108,6 +114,15 @@ int bufsave(Buf *b, const char *path);
  *  - nil if i is out of range.
  */
 Line *bufgetline(Buf *b, long i);
+
+/*
+ * buftrackgap moves the internal line-gap close to the given logical line index.
+ *
+ * This is a performance hint: it does not change the logical contents of the
+ * buffer, but it may memmove internal storage and invalidate pointers returned
+ * by bufgetline.
+ */
+void buftrackgap(Buf *b, long at);
 
 /*
  * bufinsertline inserts a new line at index at.

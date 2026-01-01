@@ -9,7 +9,9 @@
 #include "config.h"
 #include "util.h"
 
-static int bufgrow(Buf *b, size_t need);
+static size_t bufgaplen(const Buf *b);
+static void bufmovegap(Buf *b, size_t at);
+static int bufensuregap(Buf *b, size_t need);
 
 static int
 dblsz(size_t *v)
@@ -43,6 +45,104 @@ bufswap(Buf *a, Buf *b)
 	t = *a;
 	*a = *b;
 	*b = t;
+}
+
+static size_t
+bufgaplen(const Buf *b)
+{
+	if (b == nil)
+		return 0;
+	if (b->end < b->start)
+		return 0;
+	return b->end - b->start;
+}
+
+/*
+ * bufmovegap moves the line-gap to the given logical line index.
+ * After return, b->start == at.
+ */
+static void
+bufmovegap(Buf *b, size_t at)
+{
+	size_t d;
+
+	if (b == nil)
+		return;
+	if (at > b->nline)
+		at = b->nline;
+	if (b->line == nil || b->cap == 0) {
+		b->start = 0;
+		b->end = 0;
+		return;
+	}
+	if (at < b->start) {
+		d = b->start - at;
+		memmove(b->line + (b->end - d), b->line + at, d * sizeof b->line[0]);
+		b->start -= d;
+		b->end -= d;
+	} else if (at > b->start) {
+		d = at - b->start;
+		memmove(b->line + b->start, b->line + b->end, d * sizeof b->line[0]);
+		b->start += d;
+		b->end += d;
+	}
+	/* Keep invariants sane if something went wrong. */
+	if (b->start > b->nline)
+		b->start = b->nline;
+	if (b->end < b->start)
+		b->end = b->start;
+	if (b->end > b->cap)
+		b->end = b->cap;
+}
+
+/*
+ * bufensuregap ensures the line-gap has at least need empty slots.
+ */
+static int
+bufensuregap(Buf *b, size_t need)
+{
+	Line *nl;
+	size_t ncap;
+	size_t rightlen;
+	size_t newend;
+	size_t nbytes;
+
+	if (b == nil)
+		return -1;
+	if (need == 0)
+		return 0;
+	if (bufgaplen(b) >= need)
+		return 0;
+
+	ncap = b->cap ? b->cap : 8;
+	while (ncap - b->nline < need) {
+		if (dblsz(&ncap) < 0)
+			return -1;
+	}
+	if (mulsz(ncap, sizeof *nl, &nbytes) < 0)
+		return -1;
+
+	nl = malloc(nbytes);
+	if (nl == nil)
+		return -1;
+
+	/* Copy left side [0, start). */
+	if (b->start > 0)
+		memcpy(nl, b->line, b->start * sizeof nl[0]);
+
+	/* Copy right side to the end of the new buffer. */
+	rightlen = b->nline - b->start;
+	newend = ncap - rightlen;
+	if (rightlen > 0)
+		memcpy(nl + newend, b->line + b->end, rightlen * sizeof nl[0]);
+
+	free(b->line);
+	b->line = nl;
+	b->cap = ncap;
+	b->end = newend;
+	if (b->end < b->start)
+		b->end = b->start;
+	return 0;
 }
 
 /*
@@ -237,6 +337,8 @@ bufinit(Buf *b)
 	b->line = nil;
 	b->nline = 0;
 	b->cap = 0;
+	b->start = 0;
+	b->end = 0;
 
 	(void)bufinsertline(b, 0, "", 0);
 }
@@ -254,13 +356,22 @@ void
 buffree(Buf *b)
 {
 	size_t i;
+	size_t gl;
 
-	for (i = 0; i < b->nline; i++)
-		linefree(&b->line[i]);
+	if (b == nil)
+		return;
+	gl = bufgaplen(b);
+	for (i = 0; i < b->nline; i++) {
+		size_t pi;
+		pi = (i < b->start) ? i : (i + gl);
+		linefree(&b->line[pi]);
+	}
 	free(b->line);
 	b->line = nil;
 	b->nline = 0;
 	b->cap = 0;
+	b->start = 0;
+	b->end = 0;
 }
 
 /*
@@ -279,6 +390,7 @@ bufcopy(Buf *dst, Buf *src)
 {
 	size_t i;
 	Buf tmp;
+	Line *sl;
 
 	if (dst == nil || src == nil)
 		return -1;
@@ -286,16 +398,31 @@ bufcopy(Buf *dst, Buf *src)
 	tmp.line = nil;
 	tmp.nline = 0;
 	tmp.cap = 0;
+	tmp.start = 0;
+	tmp.end = 0;
 
-	if (bufgrow(&tmp, src->nline) < 0)
+	/* Prepare capacity up-front; don't mutate dst unless we succeed. */
+	if (bufensuregap(&tmp, src->nline) < 0)
 		return -1;
+	/* Append-copies each line; keep gap at end. */
+	bufmovegap(&tmp, 0);
 	for (i = 0; i < src->nline; i++) {
-		if (linecopy(&tmp.line[i], &src->line[i]) < 0) {
+		sl = bufgetline(src, (long)i);
+		if (sl == nil)
+			continue;
+		/* Ensure there is room for one more element. */
+		if (bufensuregap(&tmp, 1) < 0) {
 			buffree(&tmp);
 			return -1;
 		}
+		bufmovegap(&tmp, tmp.nline);
+		if (linecopy(&tmp.line[tmp.start], sl) < 0) {
+			buffree(&tmp);
+			return -1;
+		}
+		tmp.start++;
+		tmp.nline++;
 	}
-	tmp.nline = src->nline;
 
 	bufswap(dst, &tmp);
 	buffree(&tmp);
@@ -316,48 +443,36 @@ bufcopy(Buf *dst, Buf *src)
 Line *
 bufgetline(Buf *b, long i)
 {
+	size_t ui;
+	size_t gl;
+	size_t pi;
+
 	if (b == nil)
 		return nil;
-	if (i < 0 || (size_t)i >= b->nline)
+	if (i < 0)
 		return nil;
-	return &b->line[i];
+	ui = (size_t)i;
+	if (ui >= b->nline)
+		return nil;
+	gl = bufgaplen(b);
+	pi = (ui < b->start) ? ui : (ui + gl);
+	return &b->line[pi];
 }
 
-/*
- * bufgrow ensures b has capacity for at least need lines.
- *
- * Parameters:
- *  - b: buffer.
- *  - need: required capacity in lines.
- *
- * Returns:
- *  - 0 on success.
- *  - -1 on allocation failure.
- */
-static int
-bufgrow(Buf *b, size_t need)
+void
+buftrackgap(Buf *b, long at)
 {
-	Line *nl;
-	size_t ncap;
-	size_t nbytes;
+	size_t uat;
 
-	if (need <= b->cap)
-		return 0;
-
-	ncap = b->cap ? b->cap : 8;
-	while (ncap < need) {
-		if (dblsz(&ncap) < 0)
-			return -1;
-	}
-	if (mulsz(ncap, sizeof *nl, &nbytes) < 0)
-		return -1;
-
-	nl = realloc(b->line, nbytes);
-	if (nl == nil)
-		return -1;
-	b->line = nl;
-	b->cap = ncap;
-	return 0;
+	if (b == nil)
+		return;
+	if (at < 0)
+		uat = 0;
+	else
+		uat = (size_t)at;
+	if (uat > b->nline)
+		uat = b->nline;
+	bufmovegap(b, uat);
 }
 
 /*
@@ -376,7 +491,6 @@ bufgrow(Buf *b, size_t need)
 int
 bufinsertline(Buf *b, long at, const char *s, size_t n)
 {
-	size_t i;
 	size_t uat;
 	Line tmp;
 	size_t cap;
@@ -409,14 +523,14 @@ bufinsertline(Buf *b, long at, const char *s, size_t n)
 		tmp.end = cap;
 	}
 
-	if (bufgrow(b, b->nline + 1) < 0) {
+	/* Allocate first; do not mutate b on allocation failure. */
+	if (bufensuregap(b, 1) < 0) {
 		free(tmp.s);
 		return -1;
 	}
-
-	for (i = b->nline; i > uat; i--)
-		b->line[i] = b->line[i - 1];
-	b->line[uat] = tmp;
+	bufmovegap(b, uat);
+	b->line[b->start] = tmp;
+	b->start++;
 	b->nline++;
 	return 0;
 }
@@ -435,7 +549,6 @@ bufinsertline(Buf *b, long at, const char *s, size_t n)
 int
 bufdelline(Buf *b, long at)
 {
-	size_t i;
 	size_t uat;
 
 	if (b == nil)
@@ -445,10 +558,12 @@ bufdelline(Buf *b, long at)
 	uat = (size_t)at;
 	if (uat >= b->nline)
 		return -1;
-
-	linefree(&b->line[uat]);
-	for (i = uat; i + 1 < b->nline; i++)
-		b->line[i] = b->line[i + 1];
+	bufmovegap(b, uat);
+	/* Deleting logical line at uat means expanding the gap by one element. */
+	if (b->end >= b->cap)
+		return -1;
+	linefree(&b->line[b->end]);
+	b->end++;
 	b->nline--;
 	if (b->nline == 0)
 		(void)bufinsertline(b, 0, "", 0);
@@ -593,6 +708,8 @@ bufload(Buf *b, const char *path)
 	b->line = nil;
 	b->nline = 0;
 	b->cap = 0;
+	b->start = 0;
+	b->end = 0;
 
 	line = nil;
 	cap = 0;
@@ -643,7 +760,9 @@ bufsave(Buf *b, const char *path)
 		return -1;
 
 	for (i = 0; i < b->nline; i++) {
-		l = &b->line[i];
+		l = bufgetline(b, (long)i);
+		if (l == nil)
+			continue;
 		p = linebytes(l);
 		if (l->n > 0 && fwrite(p, 1, l->n, fp) != l->n) {
 			(void)fclose(fp);
