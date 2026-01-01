@@ -2514,6 +2514,10 @@ tabtake(Eek *e)
 	e->curwin = nil;
 	t.lastsearch = e->lastsearch;
 	e->lastsearch = nil;
+	memcpy(t.mark, e->mark, sizeof t.mark);
+	memcpy(t.markset, e->markset, sizeof t.markset);
+	memset(e->mark, 0, sizeof e->mark);
+	memset(e->markset, 0, sizeof e->markset);
 	t.undo = e->undo;
 	t.nundo = e->nundo;
 	t.capundo = e->capundo;
@@ -2539,6 +2543,8 @@ tabapply(Eek *e, Tab *t)
 	e->layout = t->layout;
 	e->curwin = t->curwin;
 	e->lastsearch = t->lastsearch;
+	memcpy(e->mark, t->mark, sizeof e->mark);
+	memcpy(e->markset, t->markset, sizeof e->markset);
 	e->undo = t->undo;
 	e->nundo = t->nundo;
 	e->capundo = t->capundo;
@@ -2648,6 +2654,8 @@ tabnew(Eek *e, const char *path)
 	e->dirty = 0;
 	free(e->lastsearch);
 	e->lastsearch = nil;
+	memset(e->mark, 0, sizeof e->mark);
+	memset(e->markset, 0, sizeof e->markset);
 	undofree(e);
 
 	w = malloc(sizeof *w);
@@ -6400,6 +6408,32 @@ ctrlw(Eek *e, Args *a)
 }
 
 static int
+markprefix(Eek *e, Args *a)
+{
+	(void)a;
+	if (e == nil)
+		return 0;
+	e->lastnormalrune = 'm';
+	e->seqcount = 0;
+	e->count = 0;
+	e->opcount = 0;
+	return 0;
+}
+
+static int
+markjump(Eek *e, Args *a)
+{
+	(void)a;
+	if (e == nil)
+		return 0;
+	e->lastnormalrune = '\'';
+	e->seqcount = 0;
+	e->count = 0;
+	e->opcount = 0;
+	return 0;
+}
+
+static int
 findagain(Eek *e, Args *a)
 {
 	long n;
@@ -6541,6 +6575,8 @@ static const Move nvkeys[] = {
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'b', "{n}b", wordprev },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'G', "{n}G", gotoline },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'g', "g f", gprefix }, /* pattern string is documentation only; matching uses kind/value */
+	{ 1u << Modenormal, Keyrune, 'm', "m{c}", markprefix },
+	{ 1u << Modenormal, Keyrune, '\'', "'{c}", markjump },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'f', "f{c}", findbegin },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 'F', "F{c}", findbegin },
 	{ (1u << Modenormal) | (1u << Modevisual), Keyrune, 't', "t{c}", findbegin },
@@ -7141,6 +7177,36 @@ nvkey(Eek *e, const Key *k)
 	}
 
 	/* Multi-key sequences handled before table dispatch (gg, gt/gT, leader). */
+	if (e->mode == Modenormal && e->lastnormalrune == 'm') {
+		if (k->value >= 'a' && k->value <= 'z') {
+			idx = k->value - 'a';
+			e->mark[idx] = e->cy;
+			e->markset[idx] = 1;
+		}
+		e->lastnormalrune = 0;
+		e->lastmotioncount = 0;
+		e->seqcount = 0;
+		e->count = 0;
+		e->opcount = 0;
+		return 1;
+	}
+	if (e->mode == Modenormal && e->lastnormalrune == '\'') {
+		if (k->value >= 'a' && k->value <= 'z') {
+			idx = k->value - 'a';
+			if (e->markset[idx]) {
+				line = e->mark[idx];
+				e->cy = clamp(line, 0, e->b.nline > 0 ? e->b.nline - 1 : 0);
+				if (e->mode == Modenormal)
+					normalfixcursor(e);
+			}
+		}
+		e->lastnormalrune = 0;
+		e->lastmotioncount = 0;
+		e->seqcount = 0;
+		e->count = 0;
+		e->opcount = 0;
+		return 1;
+	}
 	if (e->lastnormalrune == 'g' && k->value == 'g') {
 		line = e->seqcount > 0 ? e->seqcount - 1 : 0;
 		e->cy = clamp(line, 0, e->b.nline - 1);
@@ -7230,7 +7296,7 @@ nvkey(Eek *e, const Key *k)
 
 afterkey:
 	r = k->value;
-	if (r != 'l' && r != 'r' && r != 'g' && r != ' ' && r != 0x17)
+	if (r != 'l' && r != 'r' && r != 'g' && r != ' ' && r != 0x17 && r != 'm' && r != '\'')
 		e->lastnormalrune = 0;
 	if (r != 'l')
 		e->lastmotioncount = 0;

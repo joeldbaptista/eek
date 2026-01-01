@@ -110,6 +110,8 @@ struct Tab {
 	Node *layout;     /* Tab-local window layout tree. */
 	Win *curwin;      /* Tab-local active window (leaf in layout). */
 	char *lastsearch; /* Tab-local last search pattern (heap-owned) or nil. */
+	long mark[26];    /* Bookmarks ('a'..'z'): stored cursor line (0-based). */
+	unsigned char markset[26]; /* Non-zero if corresponding mark is set. */
 	Undo *undo;       /* Tab-local undo stack (dynamic array). */
 	long nundo;       /* Number of undo snapshots currently stored. */
 	long capundo;     /* Allocated capacity of undo[] in entries. */
@@ -156,6 +158,8 @@ struct Eek {
 	long dpending;       /* Pending delete operator ('d' has been typed). */
 	long cpending;       /* Pending change operator ('c' has been typed). */
 	long ypending;       /* Pending yank operator ('y' has been typed). */
+	long mark[26];       /* Bookmarks ('a'..'z'): stored cursor line (0-based). */
+	unsigned char markset[26]; /* Non-zero if corresponding mark is set. */
 	long fpending;       /* Pending find-char motion ('f' has been typed). */
 	long fcount;         /* Count for pending find motion (nth occurrence). */
 	long fmode;          /* Pending find mode: 'f','F','t','T'. */

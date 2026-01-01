@@ -139,6 +139,18 @@ In NORMAL mode:
 - `(` pages up by one window height.
 - Counts work: `n)` / `n(` (example: `3)` pages down 3 pages).
 
+### Marks (bookmarks)
+
+In NORMAL mode, eek supports simple per-tab bookmarks (marks) named `a`..`z`.
+
+- Set mark: `m{letter}` (example: `ma`)
+	- Records the current cursor **row** (line index) into that mark.
+	- Overwrites any previous value for that mark.
+- Jump to mark: `'{letter}` (example: `'a`)
+	- Moves the cursor to the marked row.
+
+Marks are stored per open file/tab (switching tabs preserves each tab’s marks).
+
 ### Substitute (`:s`)
 
 Syntax:

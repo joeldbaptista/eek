@@ -65,6 +65,14 @@ File navigation:
 - Go to first line: `gg`
 - Go to line *n* with `gg`: `ngg` (example: `12gg`)
 
+Marks (bookmarks):
+
+- Set mark: `m{letter}` (example: `ma`)
+  - Records the current cursor row into mark `a`..`z`.
+  - Overwrites the old row if the mark was already set.
+- Jump to mark: `'{letter}` (example: `'a`)
+  - Jumps to the marked row.
+
 Page navigation:
 
 - Page down: `)`
