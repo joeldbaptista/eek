@@ -181,14 +181,16 @@ nextutf8(Eek *e, long y, long at)
 	unsigned char c;
 	long n;
 	const char *s;
+	long ln;
 
 	(void)e;
 	l = bufgetline(&e->b, y);
 	if (l == nil)
 		return 0;
 	s = linebytes(l);
-	if (at >= l->n)
-		return l->n;
+	ln = lsz(l->n);
+	if (at >= ln)
+		return ln;
 
 	c = (unsigned char)s[at];
 	if (c < 0x80)
@@ -201,8 +203,8 @@ nextutf8(Eek *e, long y, long at)
 		n = 4;
 	else
 		n = 1;
-	if (at + n > l->n)
-		return l->n;
+	if (at + n > ln)
+		return ln;
 	return at + n;
 }
 
@@ -262,12 +264,14 @@ peekbyte(Eek *e, long y, long at)
 {
 	Line *l;
 	const char *s;
+	long ln;
 
 	l = bufgetline(&e->b, y);
 	if (l == nil)
 		return -1;
 	s = linebytes(l);
-	if (at < 0 || at >= l->n)
+	ln = lsz(l->n);
+	if (at < 0 || at >= ln)
 		return -1;
 	return (unsigned char)s[at];
 }
@@ -296,7 +300,7 @@ mover(Eek *e)
 void
 moveu(Eek *e)
 {
-	e->cy = clamp(e->cy - 1, 0, e->b.nline - 1);
+	e->cy = clamp(e->cy - 1, 0, lsz(e->b.nline) - 1);
 	e->cx = clamp(e->cx, 0, linelen(e, e->cy));
 }
 
@@ -306,7 +310,7 @@ moveu(Eek *e)
 void
 moved(Eek *e)
 {
-	e->cy = clamp(e->cy + 1, 0, e->b.nline - 1);
+	e->cy = clamp(e->cy + 1, 0, lsz(e->b.nline) - 1);
 	e->cx = clamp(e->cx, 0, linelen(e, e->cy));
 }
 
@@ -362,7 +366,7 @@ movew(Eek *e)
 		len = linelen(e, e->cy);
 		if (e->cx < len)
 			break;
-		if (e->cy + 1 >= e->b.nline)
+		if (e->cy + 1 >= lsz(e->b.nline))
 			break;
 		e->cy++;
 		e->cx = 0;
@@ -452,6 +456,7 @@ findfwd(Eek *e, long r, long n)
 	long patn;
 	long x;
 	const char *s;
+	long ln;
 
 	if (e == nil)
 		return -1;
@@ -464,14 +469,15 @@ findfwd(Eek *e, long r, long n)
 	if (l == nil)
 		return -1;
 	s = linebytes(l);
+	ln = lsz(l->n);
 	patn = utf8enc(r, pat);
 	if (patn <= 0)
 		return -1;
-	if (patn > l->n)
+	if (patn > ln)
 		return -1;
 
 	x = nextutf8(e, e->cy, e->cx);
-	for (; x + patn <= l->n; x = nextutf8(e, e->cy, x)) {
+	for (; x + patn <= ln; x = nextutf8(e, e->cy, x)) {
 		if (memcmp(s + x, pat, (size_t)patn) == 0) {
 			n--;
 			if (n == 0) {
@@ -479,7 +485,7 @@ findfwd(Eek *e, long r, long n)
 				return 0;
 			}
 		}
-		if (x >= l->n)
+		if (x >= ln)
 			break;
 	}
 	return -1;
@@ -500,6 +506,7 @@ findbwd(Eek *e, long r, long n)
 	long patn;
 	long x;
 	const char *s;
+	long ln;
 
 	if (e == nil)
 		return -1;
@@ -512,17 +519,18 @@ findbwd(Eek *e, long r, long n)
 	if (l == nil)
 		return -1;
 	s = linebytes(l);
+	ln = lsz(l->n);
 	patn = utf8enc(r, pat);
 	if (patn <= 0)
 		return -1;
-	if (patn > l->n)
+	if (patn > ln)
 		return -1;
 	if (e->cx <= 0)
 		return -1;
 
 	x = prevutf8(e, e->cy, e->cx);
 	for (;;) {
-		if (x + patn <= l->n && memcmp(s + x, pat, (size_t)patn) == 0) {
+		if (x + patn <= ln && memcmp(s + x, pat, (size_t)patn) == 0) {
 			n--;
 			if (n == 0) {
 				e->cx = x;

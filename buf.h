@@ -1,18 +1,20 @@
+#include <stddef.h>
+
 typedef struct Line Line;
 typedef struct Buf Buf;
 
 struct Line {
 	char *s;    /* Backing storage (raw bytes, typically UTF-8). */
-	long n;     /* Number of bytes in the line (excluding the gap). */
-	long cap;   /* Allocated capacity of s in bytes. */
-	long start; /* Gap start index in s (bytes). */
-	long end;   /* Gap end index in s (bytes). */
+	size_t n;     /* Number of bytes in the line (excluding the gap). */
+	size_t cap;   /* Allocated capacity of s in bytes. */
+	size_t start; /* Gap start index in s (bytes). */
+	size_t end;   /* Gap end index in s (bytes). */
 };
 
 struct Buf {
 	Line *line;  /* Dynamic array of lines. */
-	long nline;  /* Number of lines currently in use. */
-	long cap;    /* Allocated capacity of line[] in elements. */
+	size_t nline; /* Number of lines currently in use. */
+	size_t cap;   /* Allocated capacity of line[] in elements. */
 };
 
 /*
@@ -120,7 +122,7 @@ Line *bufgetline(Buf *b, long i);
  *  - 0 on success.
  *  - -1 on allocation failure.
  */
-int bufinsertline(Buf *b, long at, const char *s, long n);
+int bufinsertline(Buf *b, long at, const char *s, size_t n);
 
 /*
  * bufdelline deletes the line at index at.
@@ -157,7 +159,7 @@ const char *linebytes(Line *l);
  * Returns:
  *  - 0 on success.
  */
-int linetake(Line *l, char *s, long n);
+int linetake(Line *l, char *s, size_t n);
 
 /*
  * lineinsert inserts bytes into a Line at a byte offset.
@@ -172,7 +174,7 @@ int linetake(Line *l, char *s, long n);
  *  - 0 on success.
  *  - -1 on invalid offset or allocation failure.
  */
-int lineinsert(Line *l, long at, const char *s, long n);
+int lineinsert(Line *l, long at, const char *s, size_t n);
 
 /*
  * linedelrange deletes a byte range from a Line.
@@ -186,4 +188,4 @@ int lineinsert(Line *l, long at, const char *s, long n);
  *  - 0 on success.
  *  - -1 on invalid offset.
  */
-int linedelrange(Line *l, long at, long n);
+int linedelrange(Line *l, long at, size_t n);

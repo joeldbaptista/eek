@@ -338,7 +338,7 @@ sublinecmd(Eek *e, Args *a)
 	if (l->n > 0)
 		(void)linedelrange(l, 0, l->n);
 	for (i = 1; i < n; i++) {
-		if (e->cy + 1 >= e->b.nline)
+		if (e->cy + 1 >= lsz(e->b.nline))
 			break;
 		(void)bufdelline(&e->b, e->cy + 1);
 	}
@@ -712,7 +712,7 @@ findlinecontains(Eek *e, const char *s, long n)
 	if (e->b.nline <= 0)
 		return -1;
 
-	for (y = e->cy; y < e->b.nline; y++) {
+	for (y = e->cy; y < lsz(e->b.nline); y++) {
 		l = bufgetline(&e->b, y);
 		ls = linebytes(l);
 		if (l != nil && bytesfind(ls, l->n, s, n) >= 0)
@@ -742,6 +742,7 @@ static void
 vsellines(Eek *e, long *y0, long *y1)
 {
 	long a, b;
+	long max;
 
 	if (y0)
 		*y0 = 0;
@@ -749,6 +750,7 @@ vsellines(Eek *e, long *y0, long *y1)
 		*y1 = 0;
 	if (e == nil || e->b.nline <= 0)
 		return;
+	max = lsz(e->b.nline) - 1;
 
 	a = e->vay;
 	b = e->cy;
@@ -762,10 +764,10 @@ vsellines(Eek *e, long *y0, long *y1)
 		a = 0;
 	if (b < 0)
 		b = 0;
-	if (a >= e->b.nline)
-		a = e->b.nline - 1;
-	if (b >= e->b.nline)
-		b = e->b.nline - 1;
+	if (a >= lsz(e->b.nline))
+		a = max;
+	if (b >= lsz(e->b.nline))
+		b = max;
 	if (y0)
 		*y0 = a;
 	if (y1)
@@ -871,8 +873,8 @@ parseaddr(Eek *e, char **pp, long *out)
 
 	if (base < 0)
 		base = 0;
-	if (base >= e->b.nline)
-		base = e->b.nline > 0 ? e->b.nline - 1 : 0;
+	if (base >= lsz(e->b.nline))
+		base = e->b.nline > 0 ? lsz(e->b.nline) - 1 : 0;
 	*out = base;
 	*pp = p;
 	return 1;
@@ -974,7 +976,7 @@ subline(regex_t *re, const char *repl, int global, Line *l, long *nsub)
 			}
 
 			if (matchlen == 0) {
-				if (eo < l->n) {
+				if (eo < lsz(l->n)) {
 					out[outn++] = in[eo];
 					at = eo + 1;
 				} else {
@@ -983,7 +985,7 @@ subline(regex_t *re, const char *repl, int global, Line *l, long *nsub)
 			} else {
 				at = eo;
 			}
-			if (at >= l->n)
+			if (at >= lsz(l->n))
 				break;
 		}
 	}
@@ -992,7 +994,7 @@ subline(regex_t *re, const char *repl, int global, Line *l, long *nsub)
 		free(in);
 		return 0;
 	}
-	if (at < l->n) {
+	if (at < lsz(l->n)) {
 		long need;
 		char *p;
 
@@ -1011,7 +1013,7 @@ subline(regex_t *re, const char *repl, int global, Line *l, long *nsub)
 		outn += l->n - at;
 	}
 
-	if (outn == l->n && memcmp(out, ls, (size_t)l->n) == 0) {
+	if (outn == lsz(l->n) && memcmp(out, ls, (size_t)l->n) == 0) {
 		free(out);
 		free(in);
 		if (nsub)
@@ -1162,8 +1164,8 @@ subexec(Eek *e, char *line)
 	}
 	if (a0 < 0)
 		a0 = 0;
-	if (a1 >= e->b.nline)
-		a1 = e->b.nline > 0 ? e->b.nline - 1 : 0;
+	if (a1 >= lsz(e->b.nline))
+		a1 = e->b.nline > 0 ? lsz(e->b.nline) - 1 : 0;
 
 	if (undopush(e) < 0) {
 		setmsg(e, "Out of memory");
@@ -1174,7 +1176,7 @@ subexec(Eek *e, char *line)
 
 	nsub = 0;
 	nline = 0;
-	for (y = a0; y <= a1 && y < e->b.nline; y++) {
+	for (y = a0; y <= a1 && y < lsz(e->b.nline); y++) {
 		Line *l;
 		long nsl;
 
@@ -1300,10 +1302,10 @@ vselblockbounds(Eek *e, long *y0, long *y1, long *rx0, long *rx1)
 		by = 0;
 	if (e->b.nline <= 0)
 		return;
-	if (ay >= e->b.nline)
-		ay = e->b.nline - 1;
-	if (by >= e->b.nline)
-		by = e->b.nline - 1;
+	if (ay >= lsz(e->b.nline))
+		ay = lsz(e->b.nline) - 1;
+	if (by >= lsz(e->b.nline))
+		by = lsz(e->b.nline) - 1;
 
 	arx = rxfromcx(e, e->vay, e->vax);
 	if (e->vmode == Visualblock)
@@ -1606,6 +1608,7 @@ findopen(Eek *e, char open, char close, long *oy, long *ox)
 	Line *l;
 	long depth;
 	const char *ls;
+	long ln;
 
 	depth = 0;
 	for (y = e->cy; y >= 0; y--) {
@@ -1615,11 +1618,12 @@ findopen(Eek *e, char open, char close, long *oy, long *ox)
 		ls = linebytes(l);
 		if (l->n == 0)
 			continue;
-		x = l->n - 1;
+		ln = lsz(l->n);
+		x = ln - 1;
 		if (y == e->cy) {
 			x = e->cx;
-			if (x >= l->n)
-				x = l->n - 1;
+			if (x >= ln)
+				x = ln - 1;
 		}
 		for (; x >= 0; x--) {
 			unsigned char c;
@@ -1661,17 +1665,19 @@ findclosefrom(Eek *e, long sy, long sx, char open, char close, long *cy, long *c
 	Line *l;
 	long depth;
 	const char *ls;
+	long ln;
 
 	depth = 0;
-	for (y = sy; y < e->b.nline; y++) {
+	for (y = sy; y < lsz(e->b.nline); y++) {
 		l = bufgetline(&e->b, y);
 		if (l == nil)
 			continue;
 		ls = linebytes(l);
+		ln = lsz(l->n);
 		x = 0;
 		if (y == sy)
 			x = sx + 1;
-		for (; x < l->n; x++) {
+		for (; x < ln; x++) {
 			unsigned char c;
 
 			c = (unsigned char)ls[x];
@@ -1709,9 +1715,11 @@ delrange(Eek *e, long y0, long x0, long y1, long x1, int yank)
 {
 	Line *l0, *l1;
 	long i;
+	long nline;
 
 	if (undopush(e) < 0)
 		return -1;
+	nline = lsz(e->b.nline);
 
 	if (y1 < y0 || (y1 == y0 && x1 < x0)) {
 		long ty, tx;
@@ -1724,8 +1732,8 @@ delrange(Eek *e, long y0, long x0, long y1, long x1, int yank)
 	}
 	if (y0 < 0)
 		y0 = 0;
-	if (y1 >= e->b.nline)
-		y1 = e->b.nline - 1;
+	if (y1 >= nline)
+		y1 = nline - 1;
 	if (y0 > y1)
 		return 0;
 
@@ -1733,19 +1741,22 @@ delrange(Eek *e, long y0, long x0, long y1, long x1, int yank)
 		(void)yankrange(e, y0, x0, y1, x1);
 
 	if (y0 == y1) {
+		long l0n;
+
 		l0 = bufgetline(&e->b, y0);
 		if (l0 == nil)
 			return -1;
+		l0n = lsz(l0->n);
 		if (x0 < 0)
 			x0 = 0;
-		if (x0 > l0->n)
-			x0 = l0->n;
+		if (x0 > l0n)
+			x0 = l0n;
 		if (x1 < 0)
 			x1 = 0;
-		if (x1 > l0->n)
-			x1 = l0->n;
+		if (x1 > l0n)
+			x1 = l0n;
 		if (x1 > x0) {
-			if (x0 < l0->n && linedelrange(l0, x0, x1 - x0) < 0)
+			if (x0 < l0n && linedelrange(l0, x0, (size_t)(x1 - x0)) < 0)
 				return -1;
 			e->cy = y0;
 			e->cx = x0;
@@ -1764,20 +1775,30 @@ delrange(Eek *e, long y0, long x0, long y1, long x1, int yank)
 		return -1;
 
 	/* truncate start of l1 */
+	{
+		long l1n;
+
+		l1n = lsz(l1->n);
 	if (x1 < 0)
 		x1 = 0;
-	if (x1 > l1->n)
-		x1 = l1->n;
-	if (x1 > 0 && l1->n > 0)
-		(void)linedelrange(l1, 0, x1);
+	if (x1 > l1n)
+		x1 = l1n;
+	if (x1 > 0 && l1n > 0)
+		(void)linedelrange(l1, 0, (size_t)x1);
+	}
 
 	/* truncate end of l0 */
+	{
+		long l0n;
+
+		l0n = lsz(l0->n);
 	if (x0 < 0)
 		x0 = 0;
-	if (x0 > l0->n)
-		x0 = l0->n;
-	if (x0 < l0->n)
-		(void)linedelrange(l0, x0, l0->n - x0);
+	if (x0 > l0n)
+		x0 = l0n;
+	if (x0 < l0n)
+		(void)linedelrange(l0, x0, (size_t)(l0n - x0));
+	}
 
 	if (l1->n > 0) {
 		const char *l1s;
@@ -2002,6 +2023,7 @@ blockapplyinsert(Eek *e)
 	long y;
 	Line *l;
 	long cx;
+	long ln;
 
 	if (e == nil)
 		return;
@@ -2016,11 +2038,12 @@ blockapplyinsert(Eek *e)
 		l = bufgetline(&e->b, y);
 		if (l == nil)
 			continue;
+		ln = lsz(l->n);
 		cx = cxfromrx(e, y, e->blockrx0);
 		if (cx < 0)
 			cx = 0;
-		if (cx > l->n)
-			cx = l->n;
+		if (cx > ln)
+			cx = ln;
 		(void)lineinsert(l, cx, e->blockbuf, e->blockn);
 	}
 	e->dirty = 1;
@@ -2048,6 +2071,7 @@ yankrange(Eek *e, long y0, long x0, long y1, long x1)
 	long y;
 	long start;
 	long end;
+	long ln;
 
 	if (y1 < y0 || (y1 == y0 && x1 < x0)) {
 		long ty, tx;
@@ -2061,8 +2085,8 @@ yankrange(Eek *e, long y0, long x0, long y1, long x1)
 
 	if (y0 < 0)
 		y0 = 0;
-	if (y1 >= e->b.nline)
-		y1 = e->b.nline - 1;
+	if (y1 >= lsz(e->b.nline))
+		y1 = lsz(e->b.nline) - 1;
 	if (y0 > y1)
 		return 0;
 
@@ -2073,16 +2097,17 @@ yankrange(Eek *e, long y0, long x0, long y1, long x1)
 		if (l == nil)
 			break;
 		ls = linebytes(l);
+		ln = lsz(l->n);
 		start = (y == y0) ? x0 : 0;
-		end = (y == y1) ? x1 : l->n;
+		end = (y == y1) ? x1 : ln;
 		if (start < 0)
 			start = 0;
-		if (start > l->n)
-			start = l->n;
+		if (start > ln)
+			start = ln;
 		if (end < 0)
 			end = 0;
-		if (end > l->n)
-			end = l->n;
+		if (end > ln)
+			end = ln;
 		if (end > start) {
 			if (yappend(e, ls + start, end - start) < 0)
 				return -1;
@@ -2117,7 +2142,7 @@ yanklines(Eek *e, long at, long n)
 	yclear(e);
 	e->yline = 1;
 	for (i = 0; i < n; i++) {
-		if (at + i >= e->b.nline)
+		if (at + i >= lsz(e->b.nline))
 			break;
 		l = bufgetline(&e->b, at + i);
 		if (l == nil)
@@ -3072,12 +3097,14 @@ rxfromcx(Eek *e, long y, long cx)
 	Line *l;
 	long i, tx;
 	unsigned char c;
+	long ln;
 
 	l = bufgetline(&e->b, y);
 	if (l == nil)
 		return 0;
+	ln = lsz(l->n);
 	tx = 0;
-	for (i = 0; i < cx && i < l->n; ) {
+	for (i = 0; i < cx && i < ln; ) {
 		c = (unsigned char)l->s[i];
 		if (c == '\t') {
 			tx += TABSTOP - (tx % TABSTOP);
@@ -3104,6 +3131,7 @@ cxfromrx(Eek *e, long y, long rx)
 	long tx;
 	unsigned char c;
 	long w;
+	long ln;
 
 	if (e == nil)
 		return 0;
@@ -3112,9 +3140,10 @@ cxfromrx(Eek *e, long y, long rx)
 		return 0;
 	if (rx <= 0)
 		return 0;
+	ln = lsz(l->n);
 
 	tx = 0;
-	for (i = 0; i < l->n; ) {
+	for (i = 0; i < ln; ) {
 		if (tx >= rx)
 			return i;
 		c = (unsigned char)l->s[i];
@@ -3129,7 +3158,7 @@ cxfromrx(Eek *e, long y, long rx)
 		tx++;
 		i = nextutf8(e, y, i);
 	}
-	return l->n;
+	return ln;
 }
 
 static int
@@ -3139,6 +3168,7 @@ yankblock(Eek *e, long y0, long y1, long rx0, long rx1)
 	long y;
 	long cx0, cx1;
 	long t;
+	long ln;
 
 	if (e == nil)
 		return -1;
@@ -3154,8 +3184,8 @@ yankblock(Eek *e, long y0, long y1, long rx0, long rx1)
 	}
 	if (y0 < 0)
 		y0 = 0;
-	if (y1 >= e->b.nline)
-		y1 = e->b.nline - 1;
+	if (y1 >= lsz(e->b.nline))
+		y1 = lsz(e->b.nline) - 1;
 	if (y0 > y1)
 		return 0;
 
@@ -3165,16 +3195,17 @@ yankblock(Eek *e, long y0, long y1, long rx0, long rx1)
 		l = bufgetline(&e->b, y);
 		if (l == nil)
 			break;
+		ln = lsz(l->n);
 		cx0 = cxfromrx(e, y, rx0);
 		cx1 = cxfromrx(e, y, rx1 + 1);
 		if (cx0 < 0)
 			cx0 = 0;
 		if (cx1 < 0)
 			cx1 = 0;
-		if (cx0 > l->n)
-			cx0 = l->n;
-		if (cx1 > l->n)
-			cx1 = l->n;
+		if (cx0 > ln)
+			cx0 = ln;
+		if (cx1 > ln)
+			cx1 = ln;
 		if (cx1 > cx0) {
 			if (yappend(e, l->s + cx0, cx1 - cx0) < 0)
 				return -1;
@@ -3194,6 +3225,7 @@ delblock(Eek *e, long y0, long y1, long rx0, long rx1, int yank)
 	long y;
 	long cx0, cx1;
 	long t;
+	long ln;
 
 	if (e == nil)
 		return -1;
@@ -3209,8 +3241,8 @@ delblock(Eek *e, long y0, long y1, long rx0, long rx1, int yank)
 	}
 	if (y0 < 0)
 		y0 = 0;
-	if (y1 >= e->b.nline)
-		y1 = e->b.nline - 1;
+	if (y1 >= lsz(e->b.nline))
+		y1 = lsz(e->b.nline) - 1;
 	if (y0 > y1)
 		return 0;
 
@@ -3224,18 +3256,19 @@ delblock(Eek *e, long y0, long y1, long rx0, long rx1, int yank)
 		l = bufgetline(&e->b, y);
 		if (l == nil)
 			continue;
+		ln = lsz(l->n);
 		cx0 = cxfromrx(e, y, rx0);
 		cx1 = cxfromrx(e, y, rx1 + 1);
 		if (cx0 < 0)
 			cx0 = 0;
 		if (cx1 < 0)
 			cx1 = 0;
-		if (cx0 > l->n)
-			cx0 = l->n;
-		if (cx1 > l->n)
-			cx1 = l->n;
+		if (cx0 > ln)
+			cx0 = ln;
+		if (cx1 > ln)
+			cx1 = ln;
 		if (cx1 > cx0) {
-			if (linedelrange(l, cx0, cx1 - cx0) < 0)
+			if (linedelrange(l, cx0, (size_t)(cx1 - cx0)) < 0)
 				return -1;
 			e->dirty = 1;
 		}
@@ -3584,18 +3617,20 @@ synscanline(Line *l, SynState *s)
 	int instr;
 	unsigned char delim;
 	const char *ls;
+	long ln;
 
-	if (l == nil || l->n <= 0)
+	if (l == nil || l->n == 0)
 		return;
 	ls = linebytes(l);
+	ln = lsz(l->n);
 
 	instr = 0;
 	delim = 0;
-	for (i = 0; i < l->n; i++) {
+	for (i = 0; i < ln; i++) {
 		unsigned char c, n;
 
 		c = (unsigned char)ls[i];
-		n = (i + 1 < l->n) ? (unsigned char)ls[i + 1] : 0;
+		n = (i + 1 < ln) ? (unsigned char)ls[i + 1] : 0;
 
 		if (s->inblock) {
 			if (c == '*' && n == '/') {
@@ -3606,7 +3641,7 @@ synscanline(Line *l, SynState *s)
 		}
 		if (instr) {
 			if (c == '\\') {
-				if (i + 1 < l->n)
+				if (i + 1 < ln)
 					i++;
 				continue;
 			}
@@ -3654,8 +3689,8 @@ synscanuntil(Eek *e, long upto, SynState *s)
 		return;
 	if (upto <= 0)
 		return;
-	if (upto > e->b.nline)
-		upto = e->b.nline;
+	if (upto > lsz(e->b.nline))
+		upto = lsz(e->b.nline);
 	for (y = 0; y < upto; y++) {
 		l = bufgetline(&e->b, y);
 		synscanline(l, s);
@@ -3744,6 +3779,8 @@ searchforward(Eek *e, const char *pat)
 	long startx;
 	long patn;
 	Line *l;
+	long nline;
+	long ln;
 
 	if (e == nil || pat == nil)
 		return -1;
@@ -3752,17 +3789,19 @@ searchforward(Eek *e, const char *pat)
 		return -1;
 
 	y = e->cy;
+	nline = lsz(e->b.nline);
 	startx = nextutf8(e, e->cy, e->cx);
-	for (; y < e->b.nline; y++) {
+	for (; y < nline; y++) {
 		l = bufgetline(&e->b, y);
 		if (l == nil)
 			continue;
+		ln = lsz(l->n);
 		x = (y == e->cy) ? startx : 0;
 		if (x < 0)
 			x = 0;
-		if (x > l->n)
-			x = l->n;
-		for (; x + patn <= l->n; x++) {
+		if (x > ln)
+			x = ln;
+		for (; x + patn <= ln; x++) {
 			if (memcmp(l->s + x, pat, (size_t)patn) == 0) {
 				e->cy = y;
 				e->cx = x;
@@ -3772,20 +3811,20 @@ searchforward(Eek *e, const char *pat)
 	}
 
 	/* wrapscan: continue at top */
-	for (y = 0; y <= e->cy && y < e->b.nline; y++) {
+	for (y = 0; y <= e->cy && y < nline; y++) {
 		long lim;
 
 		l = bufgetline(&e->b, y);
 		if (l == nil)
 			continue;
 		x = 0;
-		lim = l->n;
+		lim = lsz(l->n);
 		if (y == e->cy) {
 			lim = e->cx;
 			if (lim < 0)
 				lim = 0;
-			if (lim > l->n)
-				lim = l->n;
+			if (lim > lsz(l->n))
+				lim = lsz(l->n);
 		}
 		if (lim < patn)
 			continue;
@@ -3822,6 +3861,7 @@ searchbackward(Eek *e, const char *pat)
 	long startx;
 	long patn;
 	Line *l;
+	long ln;
 
 	if (e == nil || pat == nil)
 		return -1;
@@ -3833,20 +3873,21 @@ searchbackward(Eek *e, const char *pat)
 		l = bufgetline(&e->b, y);
 		if (l == nil)
 			continue;
+		ln = lsz(l->n);
 		if (y == e->cy) {
 			if (e->cx > 0)
 				startx = prevutf8(e, e->cy, e->cx);
 			else
-				startx = l->n;
+				startx = ln;
 		} else {
-			startx = l->n;
+			startx = ln;
 		}
-		if (startx > l->n)
-			startx = l->n;
-		if (l->n < patn)
+		if (startx > ln)
+			startx = ln;
+		if (ln < patn)
 			continue;
-		if (startx > l->n - patn)
-			startx = l->n - patn;
+		if (startx > ln - patn)
+			startx = ln - patn;
 		for (x = startx; x >= 0; x--) {
 			if (memcmp(l->s + x, pat, (size_t)patn) == 0) {
 				e->cy = y;
@@ -3857,13 +3898,13 @@ searchbackward(Eek *e, const char *pat)
 	}
 
 	/* wrapscan: continue at bottom */
-	for (y = e->b.nline - 1; y >= e->cy && y >= 0; y--) {
+	for (y = lsz(e->b.nline) - 1; y >= e->cy && y >= 0; y--) {
 		long lim;
 
 		l = bufgetline(&e->b, y);
 		if (l == nil)
 			continue;
-		lim = l->n;
+		lim = lsz(l->n);
 		if (lim < patn)
 			continue;
 		startx = lim - patn;
@@ -3871,8 +3912,8 @@ searchbackward(Eek *e, const char *pat)
 			lim = e->cx;
 			if (lim < 0)
 				lim = 0;
-			if (lim > l->n)
-				lim = l->n;
+			if (lim > lsz(l->n))
+				lim = lsz(l->n);
 			if (lim < patn)
 				continue;
 			startx = lim - patn;
@@ -4043,9 +4084,14 @@ runinsert(Eek *e, const char *cmd)
 		(void)pclose(fp);
 		return -1;
 	}
-	if (e->cx > l->n)
-		e->cx = l->n;
-	tailn = l->n - e->cx;
+	{
+		long ln;
+
+		ln = lsz(l->n);
+		if (e->cx > ln)
+			e->cx = ln;
+		tailn = ln - e->cx;
+	}
 	tail = nil;
 	if (tailn > 0) {
 		tail = malloc((size_t)tailn);
@@ -4055,7 +4101,7 @@ runinsert(Eek *e, const char *cmd)
 			return -1;
 		}
 		memcpy(tail, l->s + e->cx, (size_t)tailn);
-		if (linedelrange(l, e->cx, tailn) < 0) {
+		if (linedelrange(l, e->cx, (size_t)tailn) < 0) {
 			free(tail);
 			free(line);
 			(void)pclose(fp);
@@ -4896,6 +4942,7 @@ draw(Eek *e)
 					long idrem;
 					int idhl;
 					long numrem;
+					long ln;
 					long tmp;
 					long j;
 					int collim;
@@ -4904,7 +4951,7 @@ draw(Eek *e)
 					termmoveto(&e->t, rr.y + (int)y, rr.x);
 					collim = rr.w;
 					rx = 0;
-					if (filerow >= e->b.nline) {
+					if (filerow >= lsz(e->b.nline)) {
 						if (collim > 0) {
 							termwrite(&e->t, "~", 1);
 							rx = 1;
@@ -4914,19 +4961,19 @@ draw(Eek *e)
 						continue;
 					}
 					if (gutter && collim > 0) {
-						long ln;
+						long gnum;
 						int nn;
 
-						ln = 0;
+						gnum = 0;
 						if (e->relativenumbers) {
 							if (filerow == e->cy)
-								ln = e->linenumbers ? filerow + 1 : 0;
+								gnum = e->linenumbers ? filerow + 1 : 0;
 							else
-								ln = filerow > e->cy ? filerow - e->cy : e->cy - filerow;
+								gnum = filerow > e->cy ? filerow - e->cy : e->cy - filerow;
 						} else {
-							ln = filerow + 1;
+							gnum = filerow + 1;
 						}
-						nn = snprintf(nbuf, sizeof nbuf, "%*ld ", numw, ln);
+						nn = snprintf(nbuf, sizeof nbuf, "%*ld ", numw, gnum);
 						if (nn > 0) {
 							if (nn > collim)
 								nn = collim;
@@ -4940,6 +4987,7 @@ draw(Eek *e)
 							termwrite(&e->t, " ", 1);
 						continue;
 					}
+					ln = lsz(l->n);
 					ls = linebytes(l);
 
 					syninit(&syn);
@@ -4957,7 +5005,7 @@ draw(Eek *e)
 					idhl = Hlnone;
 					numrem = 0;
 					if (e->syntax == Sync) {
-						for (tmp = 0; tmp < l->n; tmp++) {
+						for (tmp = 0; tmp < ln; tmp++) {
 							unsigned char c;
 							c = (unsigned char)ls[tmp];
 							if (c == ' ' || c == '\t')
@@ -4969,16 +5017,16 @@ draw(Eek *e)
 						if (preproc) {
 							long p;
 							p = 0;
-							while (p < l->n && (ls[p] == ' ' || ls[p] == '\t'))
+							while (p < ln && (ls[p] == ' ' || ls[p] == '\t'))
 								p++;
-							if (p < l->n && ls[p] == '#')
+							if (p < ln && ls[p] == '#')
 								p++;
-							while (p < l->n && (ls[p] == ' ' || ls[p] == '\t'))
+							while (p < ln && (ls[p] == ' ' || ls[p] == '\t'))
 								p++;
-							if (p + 7 <= l->n && memcmp(ls + p, "include", 7) == 0) {
+							if (p + 7 <= ln && memcmp(ls + p, "include", 7) == 0) {
 								unsigned char c;
 
-								c = (p + 7 < l->n) ? (unsigned char)ls[p + 7] : 0;
+								c = (p + 7 < ln) ? (unsigned char)ls[p + 7] : 0;
 								if (c == 0 || c == ' ' || c == '\t')
 									include = 1;
 							}
@@ -4990,7 +5038,7 @@ draw(Eek *e)
 						coloff = 0;
 					rx = gutter;
 					tx = 0;
-					for (i = 0; i < l->n && rx < collim; ) {
+					for (i = 0; i < ln && rx < collim; ) {
 						int wantinv;
 						int wanthl;
 						int basehl;
@@ -5008,7 +5056,7 @@ draw(Eek *e)
 						openstring = 0;
 						openangle = 0;
 						c = (unsigned char)ls[i];
-						n1 = (i + 1 < l->n) ? (unsigned char)ls[i + 1] : 0;
+						n1 = (i + 1 < ln) ? (unsigned char)ls[i + 1] : 0;
 
 						if (e->syntax == Sync) {
 							if (inlinecomment || syn.inblock)
@@ -5044,7 +5092,7 @@ draw(Eek *e)
 								}
 								if (!openstring && !openangle && !inlinecomment && !syn.inblock) {
 									if ((c >= '0' && c <= '9')) {
-										for (j = i; j < l->n; j++) {
+										for (j = i; j < ln; j++) {
 											unsigned char d;
 
 											d = (unsigned char)ls[j];
@@ -5057,7 +5105,7 @@ draw(Eek *e)
 									}
 									if ((c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) &&
 											(i == 0 || !isword((unsigned char)ls[i - 1]))) {
-										for (j = i; j < l->n; j++) {
+										for (j = i; j < ln; j++) {
 											unsigned char d;
 
 												d = (unsigned char)ls[j];
@@ -5113,8 +5161,8 @@ draw(Eek *e)
 						n = ni - i;
 						if (n <= 0)
 							n = 1;
-						if (i + n > l->n)
-							n = l->n - i;
+						if (i + n > ln)
+							n = ln - i;
 						if (tx >= coloff && rx < collim) {
 							termwrite(&e->t, &ls[i], n);
 							rx++;
@@ -5129,7 +5177,7 @@ draw(Eek *e)
 							}
 							if (instr && !openstring) {
 								if (c == '\\') {
-									if (i + 1 < l->n)
+									if (i + 1 < ln)
 										i++;
 								} else if (c == delim) {
 									instr = 0;
@@ -5314,6 +5362,7 @@ insertnl(Eek *e)
 {
 	Line *l;
 	long tailn;
+	long ln;
 
 	if (undopush(e) < 0)
 		return -1;
@@ -5321,10 +5370,11 @@ insertnl(Eek *e)
 	l = bufgetline(&e->b, e->cy);
 	if (l == nil)
 		return -1;
-	if (e->cx > l->n)
-		e->cx = l->n;
+	ln = lsz(l->n);
+	if (e->cx > ln)
+		e->cx = ln;
 
-	tailn = l->n - e->cx;
+	tailn = ln - e->cx;
 	if (bufinsertline(&e->b, e->cy + 1, l->s + e->cx, tailn) < 0)
 		return -1;
 	if (tailn > 0 && linedelrange(l, e->cx, tailn) < 0)
@@ -5350,6 +5400,7 @@ delat(Eek *e)
 	Line *l;
 	long nx;
 	long n;
+	long ln;
 
 	if (undopush(e) < 0)
 		return -1;
@@ -5357,7 +5408,8 @@ delat(Eek *e)
 	l = bufgetline(&e->b, e->cy);
 	if (l == nil)
 		return -1;
-	if (e->cx >= l->n)
+	ln = lsz(l->n);
+	if (e->cx >= ln)
 		return 0;
 
 	nx = nextutf8(e, e->cy, e->cx);
@@ -5367,28 +5419,6 @@ delat(Eek *e)
 	if (linedelrange(l, e->cx, n) < 0)
 		return -1;
 	e->dirty = 1;
-	return 0;
-}
-
-/*
- * delats deletes n codepoints starting at the cursor.
- *
- * Parameters:
- *  e: editor state.
- *  n: number of codepoints to delete.
- *
- * Returns:
- *  0 on success, -1 on failure.
- */
-static int
-delats(Eek *e, long n)
-{
-	long i;
-
-	for (i = 0; i < n; i++) {
-		if (delat(e) < 0)
-			return -1;
-	}
 	return 0;
 }
 
@@ -5410,19 +5440,22 @@ delat_yank(Eek *e, long n)
 	long nx;
 	long nb;
 	char *tmp;
+	long ln;
 
 	if (n <= 0)
 		n = 1;
 	l = bufgetline(&e->b, e->cy);
 	if (l == nil)
 		return -1;
-	if (e->cx >= l->n)
+	ln = lsz(l->n);
+	if (e->cx >= ln)
 		return 0;
 
 	yclear(e);
 	e->yline = 0;
 	for (i = 0; i < n; i++) {
-		if (e->cx >= l->n)
+		ln = lsz(l->n);
+		if (e->cx >= ln)
 			break;
 		nx = nextutf8(e, e->cy, e->cx);
 		nb = nx - e->cx;
@@ -5508,8 +5541,8 @@ delline(Eek *e)
 		return -1;
 	if (bufdelline(&e->b, e->cy) < 0)
 		return -1;
-	if (e->cy >= e->b.nline)
-		e->cy = e->b.nline - 1;
+	if (e->cy >= lsz(e->b.nline))
+		e->cy = lsz(e->b.nline) - 1;
 	e->cx = 0;
 	e->dirty = 1;
 	return 0;
@@ -5555,13 +5588,15 @@ wordtarget(Eek *e, long *ty, long *tx)
 	long c;
 	long len;
 	int cls;
+	long nline;
 
 	y = e->cy;
 	x = e->cx;
+	nline = lsz(e->b.nline);
 
 	len = linelen(e, y);
 	if (x >= len) {
-		if (y + 1 < e->b.nline) {
+		if (y + 1 < nline) {
 			*ty = y + 1;
 			*tx = 0;
 			return;
@@ -5619,7 +5654,7 @@ wordtarget(Eek *e, long *ty, long *tx)
 				break;
 		}
 	}
-	if (x >= len && y + 1 < e->b.nline) {
+	if (x >= len && y + 1 < nline) {
 		y++;
 		x = 0;
 	}
@@ -6176,6 +6211,7 @@ searchword(Eek *e, Args *a)
 	long patn;
 	long n;
 	long i;
+	long ln;
 
 	(void)a;
 	if (e == nil)
@@ -6185,16 +6221,17 @@ searchword(Eek *e, Args *a)
 		setmsg(e, "No word under cursor");
 		goto out;
 	}
+	ln = lsz(l->n);
 
 	pos = e->cx;
-	if (pos >= l->n)
-		pos = prevutf8(e, e->cy, l->n);
-	if (pos < 0 || pos >= l->n) {
+	if (pos >= ln)
+		pos = prevutf8(e, e->cy, ln);
+	if (pos < 0 || pos >= ln) {
 		setmsg(e, "No word under cursor");
 		goto out;
 	}
 
-	r = utf8dec1(l->s + pos, l->n - pos, &adv);
+	r = utf8dec1(l->s + pos, (size_t)(ln - pos), &adv);
 	cls = isword(r) ? 1 : (ispunctword(r) ? 2 : 0);
 	if (cls == 0) {
 		setmsg(e, "No word under cursor");
@@ -6209,7 +6246,7 @@ searchword(Eek *e, Args *a)
 		px = prevutf8(e, e->cy, x0);
 		if (px >= x0)
 			break;
-		pr = utf8dec1(l->s + px, l->n - px, &adv);
+		pr = utf8dec1(l->s + px, (size_t)(ln - px), &adv);
 		if (cls == 1) {
 			if (!isword(pr))
 				break;
@@ -6225,9 +6262,9 @@ searchword(Eek *e, Args *a)
 		long nr;
 		long nx;
 
-		if (x1 >= l->n)
+		if (x1 >= ln)
 			break;
-		nr = utf8dec1(l->s + x1, l->n - x1, &adv);
+		nr = utf8dec1(l->s + x1, (size_t)(ln - x1), &adv);
 		if (cls == 1) {
 			if (!isword(nr))
 				break;

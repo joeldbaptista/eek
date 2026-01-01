@@ -8,32 +8,21 @@
 #include "buf.h"
 #include "util.h"
 
-static int bufgrow(Buf *b, long need);
+static int bufgrow(Buf *b, size_t need);
 
 static int
-checked_double_long(long *v)
+dblsz(size_t *v)
 {
 	if (v == nil)
 		return -1;
-	if (*v > LONG_MAX / 2)
+	if (*v > SIZE_MAX / 2)
 		return -1;
 	*v *= 2;
 	return 0;
 }
 
 static int
-checked_size_from_long_nonneg(long v, size_t *out)
-{
-	if (out == nil)
-		return -1;
-	if (v < 0)
-		return -1;
-	*out = (size_t)v;
-	return 0;
-}
-
-static int
-checked_mul_size(size_t a, size_t b, size_t *out)
+mulsz(size_t a, size_t b, size_t *out)
 {
 	if (out == nil)
 		return -1;
@@ -90,7 +79,7 @@ linefree(Line *l)
 	lineinit(l);
 }
 
-static long
+static size_t
 linegaplen(const Line *l)
 {
 	if (l == nil)
@@ -105,15 +94,13 @@ linegaplen(const Line *l)
  * After return, l->start == at.
  */
 static void
-linemovegap(Line *l, long at)
+linemovegap(Line *l, size_t at)
 {
-	long d;
-	long gl;
+	size_t d;
+	size_t gl;
 
 	if (l == nil)
 		return;
-	if (at < 0)
-		at = 0;
 	if (at > l->n)
 		at = l->n;
 	if (l->s == nil || l->cap <= 0) {
@@ -134,8 +121,6 @@ linemovegap(Line *l, long at)
 		l->end += d;
 	}
 	/* Keep invariants sane if something went wrong. */
-	if (l->start < 0)
-		l->start = 0;
 	if (l->start > l->n)
 		l->start = l->n;
 	if (l->end < l->start)
@@ -149,31 +134,25 @@ linemovegap(Line *l, long at)
  * lineensuregap ensures the gap has at least need bytes available.
  */
 static int
-lineensuregap(Line *l, long need)
+lineensuregap(Line *l, size_t need)
 {
 	char *ns;
-	long ncap;
-	long rlen;
-	long newend;
+	size_t ncap;
+	size_t rlen;
+	size_t newend;
 	size_t nbytes;
 
 	if (l == nil)
 		return -1;
-	if (need < 0)
-		need = 0;
 	if (linegaplen(l) >= need)
 		return 0;
 
-	if (l->n < 0)
-		return -1;
-
 	ncap = l->cap ? l->cap : 32;
 	while (ncap - l->n < need) {
-		if (checked_double_long(&ncap) < 0)
+		if (dblsz(&ncap) < 0)
 			return -1;
 	}
-	if (checked_size_from_long_nonneg(ncap, &nbytes) < 0)
-		return -1;
+	nbytes = ncap;
 
 	ns = malloc(nbytes);
 	if (ns == nil)
@@ -210,25 +189,21 @@ lineensuregap(Line *l, long need)
 static int
 linecopy(Line *dst, Line *src)
 {
-	long llen;
-	long rlen;
-	long cap;
+	size_t llen;
+	size_t rlen;
+	size_t cap;
 
 	lineinit(dst);
 	if (src == nil)
 		return 0;
-	if (src->n <= 0)
+	if (src->n == 0)
 		return 0;
 
 	/* Copy without mutating src (don't move its gap). */
 	llen = src->start;
-	if (llen < 0)
-		llen = 0;
 	if (llen > src->n)
 		llen = src->n;
 	rlen = src->n - llen;
-	if (rlen < 0)
-		rlen = 0;
 
 	cap = src->n;
 	if (cap < 32)
@@ -280,7 +255,7 @@ bufinit(Buf *b)
 void
 buffree(Buf *b)
 {
-	long i;
+	size_t i;
 
 	for (i = 0; i < b->nline; i++)
 		linefree(&b->line[i]);
@@ -304,7 +279,7 @@ buffree(Buf *b)
 int
 bufcopy(Buf *dst, Buf *src)
 {
-	long i;
+	size_t i;
 	Buf tmp;
 
 	if (dst == nil || src == nil)
@@ -345,7 +320,7 @@ bufgetline(Buf *b, long i)
 {
 	if (b == nil)
 		return nil;
-	if (i < 0 || i >= b->nline)
+	if (i < 0 || (size_t)i >= b->nline)
 		return nil;
 	return &b->line[i];
 }
@@ -362,10 +337,10 @@ bufgetline(Buf *b, long i)
  *  - -1 on allocation failure.
  */
 static int
-bufgrow(Buf *b, long need)
+bufgrow(Buf *b, size_t need)
 {
 	Line *nl;
-	long ncap;
+	size_t ncap;
 	size_t nbytes;
 
 	if (need <= b->cap)
@@ -373,10 +348,10 @@ bufgrow(Buf *b, long need)
 
 	ncap = b->cap ? b->cap : 8;
 	while (ncap < need) {
-		if (checked_double_long(&ncap) < 0)
+		if (dblsz(&ncap) < 0)
 			return -1;
 	}
-	if (checked_mul_size((size_t)ncap, sizeof *nl, &nbytes) < 0)
+	if (mulsz(ncap, sizeof *nl, &nbytes) < 0)
 		return -1;
 
 	nl = realloc(b->line, nbytes);
@@ -401,23 +376,22 @@ bufgrow(Buf *b, long need)
  *  - -1 on allocation failure.
  */
 int
-bufinsertline(Buf *b, long at, const char *s, long n)
+bufinsertline(Buf *b, long at, const char *s, size_t n)
 {
-	long i;
+	size_t i;
+	size_t uat;
 	Line tmp;
-	long cap;
-	size_t nbytes;
+	size_t cap;
 
 	if (b == nil)
 		return -1;
 
 	if (at < 0)
-		at = 0;
-	if (at > b->nline)
-		at = b->nline;
-
-	if (n < 0)
-		n = 0;
+		uat = 0;
+	else
+		uat = (size_t)at;
+	if (uat > b->nline)
+		uat = b->nline;
 	if (n > 0 && s == nil)
 		return -1;
 
@@ -427,9 +401,7 @@ bufinsertline(Buf *b, long at, const char *s, long n)
 		cap = n;
 		if (cap < 32)
 			cap = 32;
-		if (checked_size_from_long_nonneg(cap, &nbytes) < 0)
-			return -1;
-		tmp.s = malloc(nbytes);
+		tmp.s = malloc(cap);
 		if (tmp.s == nil)
 			return -1;
 		memcpy(tmp.s, s, (size_t)n);
@@ -444,9 +416,9 @@ bufinsertline(Buf *b, long at, const char *s, long n)
 		return -1;
 	}
 
-	for (i = b->nline; i > at; i--)
+	for (i = b->nline; i > uat; i--)
 		b->line[i] = b->line[i - 1];
-	b->line[at] = tmp;
+	b->line[uat] = tmp;
 	b->nline++;
 	return 0;
 }
@@ -465,13 +437,19 @@ bufinsertline(Buf *b, long at, const char *s, long n)
 int
 bufdelline(Buf *b, long at)
 {
-	long i;
+	size_t i;
+	size_t uat;
 
-	if (at < 0 || at >= b->nline)
+	if (b == nil)
+		return -1;
+	if (at < 0)
+		return -1;
+	uat = (size_t)at;
+	if (uat >= b->nline)
 		return -1;
 
-	linefree(&b->line[at]);
-	for (i = at; i + 1 < b->nline; i++)
+	linefree(&b->line[uat]);
+	for (i = uat; i + 1 < b->nline; i++)
 		b->line[i] = b->line[i + 1];
 	b->nline--;
 	if (b->nline == 0)
@@ -504,18 +482,22 @@ bufdelline(Buf *b, long at)
  *  - -1 on invalid offset or allocation failure.
  */
 int
-lineinsert(Line *l, long at, const char *s, long n)
+lineinsert(Line *l, long at, const char *s, size_t n)
 {
-	if (n <= 0)
+	size_t uat;
+
+	if (n == 0)
 		return 0;
 	if (l == nil || (s == nil && n > 0))
 		return -1;
 	if (at < 0)
-		at = 0;
-	if (at > l->n)
-		at = l->n;
+		uat = 0;
+	else
+		uat = (size_t)at;
+	if (uat > l->n)
+		uat = l->n;
 
-	linemovegap(l, at);
+	linemovegap(l, uat);
 	if (lineensuregap(l, n) < 0)
 		return -1;
 	memcpy(l->s + l->start, s, (size_t)n);
@@ -537,17 +519,22 @@ lineinsert(Line *l, long at, const char *s, long n)
  *  - -1 on invalid offset.
  */
 int
-linedelrange(Line *l, long at, long n)
+linedelrange(Line *l, long at, size_t n)
 {
-	if (n <= 0)
+	size_t uat;
+
+	if (n == 0)
 		return 0;
 	if (l == nil)
 		return -1;
-	if (at < 0 || at >= l->n)
+	if (at < 0)
 		return -1;
-	if (at + n > l->n)
-		n = l->n - at;
-	linemovegap(l, at);
+	uat = (size_t)at;
+	if (uat >= l->n)
+		return -1;
+	if (n > l->n - uat)
+		n = l->n - uat;
+	linemovegap(l, uat);
 	l->end += n;
 	l->n -= n;
 	return 0;
@@ -558,19 +545,17 @@ linebytes(Line *l)
 {
 	if (l == nil)
 		return nil;
-	if (l->n <= 0)
+	if (l->n == 0)
 		return l->s;
 	linemovegap(l, l->n);
 	return l->s;
 }
 
 int
-linetake(Line *l, char *s, long n)
+linetake(Line *l, char *s, size_t n)
 {
 	if (l == nil)
 		return -1;
-	if (n < 0)
-		n = 0;
 	if (n > 0 && s == nil)
 		return -1;
 	free(l->s);
@@ -616,7 +601,12 @@ bufload(Buf *b, const char *path)
 	while ((n = getline(&line, &cap, fp)) >= 0) {
 		while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'))
 			n--;
-		if (bufinsertline(b, b->nline, line, (long)n) < 0) {
+		if (n < 0) {
+			free(line);
+			(void)fclose(fp);
+			return -1;
+		}
+		if (bufinsertline(b, (long)b->nline, line, (size_t)n) < 0) {
 			free(line);
 			(void)fclose(fp);
 			return -1;
@@ -646,7 +636,7 @@ int
 bufsave(Buf *b, const char *path)
 {
 	FILE *fp;
-	long i;
+	size_t i;
 	Line *l;
 	const char *p;
 
@@ -657,7 +647,7 @@ bufsave(Buf *b, const char *path)
 	for (i = 0; i < b->nline; i++) {
 		l = &b->line[i];
 		p = linebytes(l);
-		if (l->n > 0 && fwrite(p, 1, (size_t)l->n, fp) != (size_t)l->n) {
+		if (l->n > 0 && fwrite(p, 1, l->n, fp) != l->n) {
 			(void)fclose(fp);
 			return -1;
 		}

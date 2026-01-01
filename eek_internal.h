@@ -1,6 +1,8 @@
 #ifndef EEK_INTERNAL_H
 #define EEK_INTERNAL_H
 
+#include <limits.h>
+
 #include "config.h"
 #include "buf.h"
 #include "eek.h"
@@ -263,6 +265,18 @@ long utf8dec1(const char *s, long n, long *adv);
  *  - number of bytes written (1..4).
  */
 long utf8enc(long r, char *s);
+
+/*
+ * lsz converts a size_t length/count to long, clamping to LONG_MAX.
+ * This keeps cursor/index math in signed longs while Buf/Line sizes use size_t.
+ */
+static inline long
+lsz(size_t n)
+{
+	if (n > (size_t)LONG_MAX)
+		return LONG_MAX;
+	return (long)n;
+}
 
 /*
  * clamp clamps v into [lo, hi].
