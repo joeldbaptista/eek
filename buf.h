@@ -16,6 +16,22 @@ struct Buf {
 };
 
 /*
+ * Notes (STL-style container semantics):
+ *
+ *  - Pointer/reference invalidation: any operation that can reallocate or
+ *    shift the underlying line array (e.g. bufinsertline, bufdelline,
+ *    bufload, bufcopy, buffree) may invalidate pointers returned by
+ *    bufgetline.
+ *
+ *  - Complexity: bufinsertline/bufdelline are O(nline) due to shifting.
+ *
+ *  - Failure guarantees:
+ *      * bufinsertline provides a strong guarantee (on failure, Buf is
+ *        unchanged).
+ *      * bufcopy provides a strong guarantee (on failure, dst is unchanged).
+ */
+
+/*
  * bufinit initializes an empty buffer.
  *
  * Parameters:

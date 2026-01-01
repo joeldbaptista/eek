@@ -1,12 +1,47 @@
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 #include "buf.h"
 #include "util.h"
 
 static int bufgrow(Buf *b, long need);
+
+static int
+checked_double_long(long *v)
+{
+	if (v == nil)
+		return -1;
+	if (*v > LONG_MAX / 2)
+		return -1;
+	*v *= 2;
+	return 0;
+}
+
+static int
+checked_size_from_long_nonneg(long v, size_t *out)
+{
+	if (out == nil)
+		return -1;
+	if (v < 0)
+		return -1;
+	*out = (size_t)v;
+	return 0;
+}
+
+static int
+checked_mul_size(size_t a, size_t b, size_t *out)
+{
+	if (out == nil)
+		return -1;
+	if (a != 0 && b != 0 && a > SIZE_MAX / b)
+		return -1;
+	*out = a * b;
+	return 0;
+}
 
 static void
 bufswap(Buf *a, Buf *b)
@@ -120,6 +155,7 @@ lineensuregap(Line *l, long need)
 	long ncap;
 	long rlen;
 	long newend;
+	size_t nbytes;
 
 	if (l == nil)
 		return -1;
@@ -128,11 +164,18 @@ lineensuregap(Line *l, long need)
 	if (linegaplen(l) >= need)
 		return 0;
 
-	ncap = l->cap ? l->cap : 32;
-	while (ncap - l->n < need)
-		ncap *= 2;
+	if (l->n < 0)
+		return -1;
 
-	ns = malloc((size_t)ncap);
+	ncap = l->cap ? l->cap : 32;
+	while (ncap - l->n < need) {
+		if (checked_double_long(&ncap) < 0)
+			return -1;
+	}
+	if (checked_size_from_long_nonneg(ncap, &nbytes) < 0)
+		return -1;
+
+	ns = malloc(nbytes);
 	if (ns == nil)
 		return -1;
 	/* Copy left side. */
@@ -323,15 +366,20 @@ bufgrow(Buf *b, long need)
 {
 	Line *nl;
 	long ncap;
+	size_t nbytes;
 
 	if (need <= b->cap)
 		return 0;
 
 	ncap = b->cap ? b->cap : 8;
-	while (ncap < need)
-		ncap *= 2;
+	while (ncap < need) {
+		if (checked_double_long(&ncap) < 0)
+			return -1;
+	}
+	if (checked_mul_size((size_t)ncap, sizeof *nl, &nbytes) < 0)
+		return -1;
 
-	nl = realloc(b->line, (size_t)ncap * sizeof *nl);
+	nl = realloc(b->line, nbytes);
 	if (nl == nil)
 		return -1;
 	b->line = nl;
@@ -358,6 +406,7 @@ bufinsertline(Buf *b, long at, const char *s, long n)
 	long i;
 	Line tmp;
 	long cap;
+	size_t nbytes;
 
 	if (b == nil)
 		return -1;
@@ -378,7 +427,9 @@ bufinsertline(Buf *b, long at, const char *s, long n)
 		cap = n;
 		if (cap < 32)
 			cap = 32;
-		tmp.s = malloc((size_t)cap);
+		if (checked_size_from_long_nonneg(cap, &nbytes) < 0)
+			return -1;
+		tmp.s = malloc(nbytes);
 		if (tmp.s == nil)
 			return -1;
 		memcpy(tmp.s, s, (size_t)n);
