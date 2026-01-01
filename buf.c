@@ -115,7 +115,7 @@ bufensuregap(Buf *b, size_t need)
 		return 0;
 
 	ncap = b->cap ? b->cap : 8;
-	for (; ncap - b->nline < need; ) {
+	while (ncap - b->nline < need) {
 		if (dblsz(&ncap) < 0)
 			return -1;
 	}
@@ -246,7 +246,7 @@ lineensuregap(Line *l, size_t need)
 		return 0;
 
 	ncap = l->cap ? l->cap : (size_t)LINE_MIN_CAP;
-	for (; ncap - l->n < need; ) {
+	while (ncap - l->n < need) {
 		if (dblsz(&ncap) < 0)
 			return -1;
 	}
@@ -719,7 +719,7 @@ bufload(Buf *b, const char *path)
 	b->start = 0;
 	b->end = 0;
 
-	for (; (n = getline(&line, &cap, fp)) >= 0; ) {
+	while ((n = getline(&line, &cap, fp)) >= 0) {
 		for (; n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'); n--)
 			;
 		if (n < 0) {
