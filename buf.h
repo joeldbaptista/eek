@@ -20,26 +20,6 @@ struct Buf {
 };
 
 /*
- * Notes (STL-style container semantics):
- *
- *  - Pointer/reference invalidation: any operation that can reallocate or
-	 *    move the line gap, reallocate, or shift storage (e.g. bufinsertline, bufdelline,
- *    bufload, bufcopy, buffree) may invalidate pointers returned by
- *    bufgetline.
-	 *    buftrackgap also moves the gap and may invalidate pointers.
- *
-	 *  - Complexity:
-	 *      * bufgetline is O(1).
-	 *      * bufinsertline/bufdelline are amortized O(1) when edits are near the current
-	 *        gap, and O(nline) worst-case when the gap must move far.
- *
- *  - Failure guarantees:
- *      * bufinsertline provides a strong guarantee (on failure, Buf is
- *        unchanged).
- *      * bufcopy provides a strong guarantee (on failure, dst is unchanged).
- */
-
-/*
  * bufinit initializes an empty buffer.
  *
  * Parameters:
