@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "config.h"
 #include "util.h"
 
 static int bufgrow(Buf *b, size_t need);
@@ -147,7 +148,7 @@ lineensuregap(Line *l, size_t need)
 	if (linegaplen(l) >= need)
 		return 0;
 
-	ncap = l->cap ? l->cap : 32;
+	ncap = l->cap ? l->cap : (size_t)LINE_MIN_CAP;
 	while (ncap - l->n < need) {
 		if (dblsz(&ncap) < 0)
 			return -1;
@@ -206,8 +207,8 @@ linecopy(Line *dst, Line *src)
 	rlen = src->n - llen;
 
 	cap = src->n;
-	if (cap < 32)
-		cap = 32;
+	if (cap < (size_t)LINE_MIN_CAP)
+		cap = (size_t)LINE_MIN_CAP;
 	dst->s = malloc((size_t)cap);
 	if (dst->s == nil) {
 		lineinit(dst);
@@ -399,8 +400,8 @@ bufinsertline(Buf *b, long at, const char *s, size_t n)
 	lineinit(&tmp);
 	if (n > 0) {
 		cap = n;
-		if (cap < 32)
-			cap = 32;
+		if (cap < (size_t)LINE_MIN_CAP)
+			cap = (size_t)LINE_MIN_CAP;
 		tmp.s = malloc(cap);
 		if (tmp.s == nil)
 			return -1;
