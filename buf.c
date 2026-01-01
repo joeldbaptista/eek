@@ -8,6 +8,18 @@
 
 static int bufgrow(Buf *b, long need);
 
+static void
+bufswap(Buf *a, Buf *b)
+{
+	Buf t;
+
+	if (a == nil || b == nil)
+		return;
+	t = *a;
+	*a = *b;
+	*b = t;
+}
+
 /*
  * lineinit initializes a Line to an empty state.
  *
@@ -155,7 +167,9 @@ lineensuregap(Line *l, long need)
 static int
 linecopy(Line *dst, Line *src)
 {
-	const char *p;
+	long llen;
+	long rlen;
+	long cap;
 
 	lineinit(dst);
 	if (src == nil)
@@ -163,22 +177,32 @@ linecopy(Line *dst, Line *src)
 	if (src->n <= 0)
 		return 0;
 
-	/* Copy via contiguous view of src. */
-	p = linebytes(src);
-	if (p == nil)
-		return 0;
-	dst->cap = src->n;
-	if (dst->cap < 32)
-		dst->cap = 32;
-	dst->s = malloc((size_t)dst->cap);
+	/* Copy without mutating src (don't move its gap). */
+	llen = src->start;
+	if (llen < 0)
+		llen = 0;
+	if (llen > src->n)
+		llen = src->n;
+	rlen = src->n - llen;
+	if (rlen < 0)
+		rlen = 0;
+
+	cap = src->n;
+	if (cap < 32)
+		cap = 32;
+	dst->s = malloc((size_t)cap);
 	if (dst->s == nil) {
 		lineinit(dst);
 		return -1;
 	}
-	memcpy(dst->s, p, (size_t)src->n);
+	if (llen > 0)
+		memcpy(dst->s, src->s, (size_t)llen);
+	if (rlen > 0)
+		memcpy(dst->s + llen, src->s + src->end, (size_t)rlen);
 	dst->n = src->n;
+	dst->cap = cap;
 	dst->start = src->n;
-	dst->end = dst->cap;
+	dst->end = cap;
 	return 0;
 }
 
@@ -238,24 +262,27 @@ int
 bufcopy(Buf *dst, Buf *src)
 {
 	long i;
+	Buf tmp;
 
 	if (dst == nil || src == nil)
 		return -1;
 
-	buffree(dst);
-	dst->line = nil;
-	dst->nline = 0;
-	dst->cap = 0;
+	tmp.line = nil;
+	tmp.nline = 0;
+	tmp.cap = 0;
 
-	if (bufgrow(dst, src->nline) < 0)
+	if (bufgrow(&tmp, src->nline) < 0)
 		return -1;
 	for (i = 0; i < src->nline; i++) {
-		if (linecopy(&dst->line[i], &src->line[i]) < 0) {
-			buffree(dst);
+		if (linecopy(&tmp.line[i], &src->line[i]) < 0) {
+			buffree(&tmp);
 			return -1;
 		}
 	}
-	dst->nline = src->nline;
+	tmp.nline = src->nline;
+
+	bufswap(dst, &tmp);
+	buffree(&tmp);
 	return 0;
 }
 
@@ -273,6 +300,8 @@ bufcopy(Buf *dst, Buf *src)
 Line *
 bufgetline(Buf *b, long i)
 {
+	if (b == nil)
+		return nil;
 	if (i < 0 || i >= b->nline)
 		return nil;
 	return &b->line[i];
@@ -327,40 +356,46 @@ int
 bufinsertline(Buf *b, long at, const char *s, long n)
 {
 	long i;
-	Line *l;
+	Line tmp;
 	long cap;
+
+	if (b == nil)
+		return -1;
 
 	if (at < 0)
 		at = 0;
 	if (at > b->nline)
 		at = b->nline;
 
-	if (bufgrow(b, b->nline + 1) < 0)
-		return -1;
-
-	for (i = b->nline; i > at; i--)
-		b->line[i] = b->line[i - 1];
-
-	l = &b->line[at];
-	lineinit(l);
 	if (n < 0)
 		n = 0;
 	if (n > 0 && s == nil)
 		return -1;
-	cap = n;
-	if (cap < 32)
-		cap = 32;
-	l->s = malloc((size_t)cap);
-	if (l->s == nil) {
-		lineinit(l);
+
+	/* Prepare new element first so failures don't mutate b. */
+	lineinit(&tmp);
+	if (n > 0) {
+		cap = n;
+		if (cap < 32)
+			cap = 32;
+		tmp.s = malloc((size_t)cap);
+		if (tmp.s == nil)
+			return -1;
+		memcpy(tmp.s, s, (size_t)n);
+		tmp.n = n;
+		tmp.cap = cap;
+		tmp.start = n;
+		tmp.end = cap;
+	}
+
+	if (bufgrow(b, b->nline + 1) < 0) {
+		free(tmp.s);
 		return -1;
 	}
-	if (n > 0)
-		memcpy(l->s, s, (size_t)n);
-	l->n = n;
-	l->cap = cap;
-	l->start = n;
-	l->end = cap;
+
+	for (i = b->nline; i > at; i--)
+		b->line[i] = b->line[i - 1];
+	b->line[at] = tmp;
 	b->nline++;
 	return 0;
 }
