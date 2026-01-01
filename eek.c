@@ -6710,12 +6710,14 @@ page(Eek *e, Args *a)
 	long r;
 	long npage;
 	long rows;
+	long step;
 	long delta;
 
 	r = argsat(a, 0, 0);
 	npage = countval(e->count);
 	rows = curwinrows(e);
-	delta = rows * npage;
+	step = (rows > 1) ? (rows - 1) : 1;
+	delta = step * npage;
 	if (r == '(')
 		delta = -delta;
 	e->cy = clamp(e->cy + delta, 0, e->b.nline > 0 ? e->b.nline - 1 : 0);
