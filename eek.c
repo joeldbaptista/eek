@@ -267,6 +267,7 @@ static int
 delend(Eek *e, Args *a)
 {
 	Line *l;
+	const char *ls;
 	long len;
 	long nlines;
 	long i;
@@ -281,9 +282,10 @@ delend(Eek *e, Args *a)
 		return 0;
 	l = bufgetline(&e->b, e->cy);
 	if (l != nil) {
+		ls = linebytes(l);
 		len = l->n;
 		if (e->cx < len)
-			(void)yset(e, l->s + e->cx, len - e->cx, 0);
+			(void)yset(e, ls + e->cx, len - e->cx, 0);
 		else
 			yclear(e);
 		if (e->cx < len)
@@ -292,14 +294,16 @@ delend(Eek *e, Args *a)
 	for (i = 1; i < nlines; i++) {
 		Line *nl;
 		char nlsep;
+		const char *nls;
 
 		nl = bufgetline(&e->b, e->cy + 1);
 		if (nl == nil)
 			break;
+		nls = linebytes(nl);
 		nlsep = '\n';
 		(void)yappend(e, &nlsep, 1);
 		if (nl->n > 0)
-			(void)yappend(e, nl->s, nl->n);
+			(void)yappend(e, nls, nl->n);
 		(void)bufdelline(&e->b, e->cy + 1);
 	}
 	e->dirty = 1;
@@ -701,6 +705,7 @@ findlinecontains(Eek *e, const char *s, long n)
 {
 	long y;
 	Line *l;
+	const char *ls;
 
 	if (e == nil || s == nil)
 		return -1;
@@ -709,12 +714,14 @@ findlinecontains(Eek *e, const char *s, long n)
 
 	for (y = e->cy; y < e->b.nline; y++) {
 		l = bufgetline(&e->b, y);
-		if (l != nil && bytesfind(l->s, l->n, s, n) >= 0)
+		ls = linebytes(l);
+		if (l != nil && bytesfind(ls, l->n, s, n) >= 0)
 			return y;
 	}
 	for (y = 0; y < e->cy; y++) {
 		l = bufgetline(&e->b, y);
-		if (l != nil && bytesfind(l->s, l->n, s, n) >= 0)
+		ls = linebytes(l);
+		if (l != nil && bytesfind(ls, l->n, s, n) >= 0)
 			return y;
 	}
 	return -1;
@@ -894,16 +901,18 @@ subline(regex_t *re, const char *repl, int global, Line *l, long *nsub)
 	regmatch_t m[1];
 	long at;
 	int rc;
+	const char *ls;
 
 	if (nsub)
 		*nsub = 0;
 	if (re == nil || repl == nil || l == nil)
 		return -1;
+	ls = linebytes(l);
 
 	in = malloc((size_t)l->n + 1);
 	if (in == nil)
 		return -1;
-	memcpy(in, l->s, (size_t)l->n);
+	memcpy(in, ls, (size_t)l->n);
 	in[l->n] = 0;
 
 	out = nil;
@@ -1002,18 +1011,21 @@ subline(regex_t *re, const char *repl, int global, Line *l, long *nsub)
 		outn += l->n - at;
 	}
 
-	if (outn == l->n && memcmp(out, l->s, (size_t)l->n) == 0) {
+	if (outn == l->n && memcmp(out, ls, (size_t)l->n) == 0) {
 		free(out);
 		free(in);
 		if (nsub)
 			*nsub = 0;
 		return 0;
 	}
-
-	free(l->s);
-	l->s = out;
-	l->n = outn;
-	l->cap = outcap;
+	if (outcap != outn) {
+		char *p;
+		p = realloc(out, (size_t)outn);
+		if (p != nil)
+			out = p;
+		outcap = outn;
+	}
+	(void)linetake(l, out, outn);
 	free(in);
 	return 0;
 }
@@ -1408,6 +1420,7 @@ static int
 vsinnerword(Eek *e)
 {
 	Line *l;
+	const char *ls;
 	long y;
 	long len;
 	long pos;
@@ -1422,6 +1435,7 @@ vsinnerword(Eek *e)
 	l = bufgetline(&e->b, y);
 	if (l == nil)
 		return -1;
+	ls = linebytes(l);
 	len = l->n;
 	if (len <= 0)
 		return -1;
@@ -1433,7 +1447,7 @@ vsinnerword(Eek *e)
 		pos = 0;
 
 	/* Determine the word class at/near the cursor (word vs punct-word). */
-	r = (pos < len) ? utf8dec1(l->s + pos, len - pos, &adv) : -1;
+	r = (pos < len) ? utf8dec1(ls + pos, len - pos, &adv) : -1;
 	cls = isword(r) ? 1 : (ispunctword(r) ? 2 : 0);
 	if (cls == 0) {
 		long p;
@@ -1445,7 +1459,7 @@ vsinnerword(Eek *e)
 
 			if (p >= len)
 				break;
-			r = utf8dec1(l->s + p, len - p, &adv);
+			r = utf8dec1(ls + p, len - p, &adv);
 			cls = isword(r) ? 1 : (ispunctword(r) ? 2 : 0);
 			if (cls != 0) {
 				pos = p;
@@ -1469,7 +1483,7 @@ vsinnerword(Eek *e)
 				if (pp >= p)
 					break;
 				p = pp;
-				r = utf8dec1(l->s + p, len - p, &adv);
+				r = utf8dec1(ls + p, len - p, &adv);
 				cls = isword(r) ? 1 : (ispunctword(r) ? 2 : 0);
 				if (cls != 0) {
 					pos = p;
@@ -1490,7 +1504,7 @@ vsinnerword(Eek *e)
 		px = prevutf8(e, y, x0);
 		if (px >= x0)
 			break;
-		pr = utf8dec1(l->s + px, len - px, &adv);
+		pr = utf8dec1(ls + px, len - px, &adv);
 		if (cls == 1) {
 			if (!isword(pr))
 				break;
@@ -1509,7 +1523,7 @@ vsinnerword(Eek *e)
 
 		if (x1 >= len)
 			break;
-		nr = utf8dec1(l->s + x1, len - x1, &adv);
+		nr = utf8dec1(ls + x1, len - x1, &adv);
 		if (cls == 1) {
 			if (!isword(nr))
 				break;
@@ -1591,12 +1605,14 @@ findopen(Eek *e, char open, char close, long *oy, long *ox)
 	long y, x;
 	Line *l;
 	long depth;
+	const char *ls;
 
 	depth = 0;
 	for (y = e->cy; y >= 0; y--) {
 		l = bufgetline(&e->b, y);
 		if (l == nil)
 			continue;
+		ls = linebytes(l);
 		if (l->n == 0)
 			continue;
 		x = l->n - 1;
@@ -1608,7 +1624,7 @@ findopen(Eek *e, char open, char close, long *oy, long *ox)
 		for (; x >= 0; x--) {
 			unsigned char c;
 
-			c = (unsigned char)l->s[x];
+			c = (unsigned char)ls[x];
 			if (c == (unsigned char)close)
 				depth++;
 			else if (c == (unsigned char)open) {
@@ -1644,19 +1660,21 @@ findclosefrom(Eek *e, long sy, long sx, char open, char close, long *cy, long *c
 	long y, x;
 	Line *l;
 	long depth;
+	const char *ls;
 
 	depth = 0;
 	for (y = sy; y < e->b.nline; y++) {
 		l = bufgetline(&e->b, y);
 		if (l == nil)
 			continue;
+		ls = linebytes(l);
 		x = 0;
 		if (y == sy)
 			x = sx + 1;
 		for (; x < l->n; x++) {
 			unsigned char c;
 
-			c = (unsigned char)l->s[x];
+			c = (unsigned char)ls[x];
 			if (c == (unsigned char)open)
 				depth++;
 			else if (c == (unsigned char)close) {
@@ -1761,8 +1779,11 @@ delrange(Eek *e, long y0, long x0, long y1, long x1, int yank)
 	if (x0 < l0->n)
 		(void)linedelrange(l0, x0, l0->n - x0);
 
-	if (l1->n > 0)
-		(void)lineinsert(l0, l0->n, l1->s, l1->n);
+	if (l1->n > 0) {
+		const char *l1s;
+		l1s = linebytes(l1);
+		(void)lineinsert(l0, l0->n, l1s, l1->n);
+	}
 	(void)bufdelline(&e->b, y0 + 1);
 
 	e->cy = y0;
@@ -2023,6 +2044,7 @@ static int
 yankrange(Eek *e, long y0, long x0, long y1, long x1)
 {
 	Line *l;
+	const char *ls;
 	long y;
 	long start;
 	long end;
@@ -2050,6 +2072,7 @@ yankrange(Eek *e, long y0, long x0, long y1, long x1)
 		l = bufgetline(&e->b, y);
 		if (l == nil)
 			break;
+		ls = linebytes(l);
 		start = (y == y0) ? x0 : 0;
 		end = (y == y1) ? x1 : l->n;
 		if (start < 0)
@@ -2061,7 +2084,7 @@ yankrange(Eek *e, long y0, long x0, long y1, long x1)
 		if (end > l->n)
 			end = l->n;
 		if (end > start) {
-			if (yappend(e, l->s + start, end - start) < 0)
+			if (yappend(e, ls + start, end - start) < 0)
 				return -1;
 		}
 		if (y < y1) {
@@ -2089,6 +2112,7 @@ yanklines(Eek *e, long at, long n)
 {
 	long i;
 	Line *l;
+	const char *ls;
 
 	yclear(e);
 	e->yline = 1;
@@ -2098,11 +2122,12 @@ yanklines(Eek *e, long at, long n)
 		l = bufgetline(&e->b, at + i);
 		if (l == nil)
 			break;
+		ls = linebytes(l);
 		if (i > 0) {
 			if (yappend(e, "\n", 1) < 0)
 				return -1;
 		}
-		if (l->n > 0 && yappend(e, l->s, l->n) < 0)
+		if (l->n > 0 && yappend(e, ls, l->n) < 0)
 			return -1;
 	}
 	return 0;
@@ -3558,17 +3583,19 @@ synscanline(Line *l, SynState *s)
 	long i;
 	int instr;
 	unsigned char delim;
+	const char *ls;
 
 	if (l == nil || l->n <= 0)
 		return;
+	ls = linebytes(l);
 
 	instr = 0;
 	delim = 0;
 	for (i = 0; i < l->n; i++) {
 		unsigned char c, n;
 
-		c = (unsigned char)l->s[i];
-		n = (i + 1 < l->n) ? (unsigned char)l->s[i + 1] : 0;
+		c = (unsigned char)ls[i];
+		n = (i + 1 < l->n) ? (unsigned char)ls[i + 1] : 0;
 
 		if (s->inblock) {
 			if (c == '*' && n == '/') {
@@ -4803,6 +4830,7 @@ draw(Eek *e)
 	long y;
 	long filerow;
 	Line *l;
+	const char *ls;
 	long i, rx;
 	long tx;
 	long coloff;
@@ -4912,6 +4940,7 @@ draw(Eek *e)
 							termwrite(&e->t, " ", 1);
 						continue;
 					}
+					ls = linebytes(l);
 
 					syninit(&syn);
 					synscanuntil(e, filerow, &syn);
@@ -4930,7 +4959,7 @@ draw(Eek *e)
 					if (e->syntax == Sync) {
 						for (tmp = 0; tmp < l->n; tmp++) {
 							unsigned char c;
-							c = (unsigned char)l->s[tmp];
+							c = (unsigned char)ls[tmp];
 							if (c == ' ' || c == '\t')
 								continue;
 							if (c == '#')
@@ -4940,16 +4969,16 @@ draw(Eek *e)
 						if (preproc) {
 							long p;
 							p = 0;
-							while (p < l->n && (l->s[p] == ' ' || l->s[p] == '\t'))
+							while (p < l->n && (ls[p] == ' ' || ls[p] == '\t'))
 								p++;
-							if (p < l->n && l->s[p] == '#')
+							if (p < l->n && ls[p] == '#')
 								p++;
-							while (p < l->n && (l->s[p] == ' ' || l->s[p] == '\t'))
+							while (p < l->n && (ls[p] == ' ' || ls[p] == '\t'))
 								p++;
-							if (p + 7 <= l->n && memcmp(l->s + p, "include", 7) == 0) {
+							if (p + 7 <= l->n && memcmp(ls + p, "include", 7) == 0) {
 								unsigned char c;
 
-								c = (p + 7 < l->n) ? (unsigned char)l->s[p + 7] : 0;
+								c = (p + 7 < l->n) ? (unsigned char)ls[p + 7] : 0;
 								if (c == 0 || c == ' ' || c == '\t')
 									include = 1;
 							}
@@ -4978,8 +5007,8 @@ draw(Eek *e)
 						wanthl = basehl;
 						openstring = 0;
 						openangle = 0;
-						c = (unsigned char)l->s[i];
-						n1 = (i + 1 < l->n) ? (unsigned char)l->s[i + 1] : 0;
+						c = (unsigned char)ls[i];
+						n1 = (i + 1 < l->n) ? (unsigned char)ls[i + 1] : 0;
 
 						if (e->syntax == Sync) {
 							if (inlinecomment || syn.inblock)
@@ -5018,7 +5047,7 @@ draw(Eek *e)
 										for (j = i; j < l->n; j++) {
 											unsigned char d;
 
-											d = (unsigned char)l->s[j];
+											d = (unsigned char)ls[j];
 											if (!((d >= '0' && d <= '9') || d == '.' || d == 'x' || d == 'X' ||
 												(d >= 'a' && d <= 'f') || (d >= 'A' && d <= 'F')))
 												break;
@@ -5027,15 +5056,15 @@ draw(Eek *e)
 										wanthl = Hlnumber;
 									}
 									if ((c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) &&
-										(i == 0 || !isword((unsigned char)l->s[i - 1]))) {
+											(i == 0 || !isword((unsigned char)ls[i - 1]))) {
 										for (j = i; j < l->n; j++) {
 											unsigned char d;
 
-											d = (unsigned char)l->s[j];
+												d = (unsigned char)ls[j];
 											if (!(d == '_' || (d >= 'A' && d <= 'Z') || (d >= 'a' && d <= 'z') || (d >= '0' && d <= '9')))
 												break;
 										}
-										idhl = synwordkind_lang(e->syntax, l->s + i, j - i);
+											idhl = synwordkind_lang(e->syntax, ls + i, j - i);
 										idrem = j - i;
 										if (idhl != Hlnone)
 											wanthl = idhl;
@@ -5052,7 +5081,7 @@ draw(Eek *e)
 							curhl = wanthl;
 						}
 
-						if (l->s[i] == '\t') {
+						if (ls[i] == '\t') {
 							long nsp;
 
 							nsp = TABSTOP - (tx % TABSTOP);
@@ -5087,7 +5116,7 @@ draw(Eek *e)
 						if (i + n > l->n)
 							n = l->n - i;
 						if (tx >= coloff && rx < collim) {
-							termwrite(&e->t, &l->s[i], n);
+							termwrite(&e->t, &ls[i], n);
 							rx++;
 						}
 						if (e->syntax == Sync) {

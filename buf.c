@@ -23,6 +23,8 @@ lineinit(Line *l)
 	l->s = nil;
 	l->n = 0;
 	l->cap = 0;
+	l->start = 0;
+	l->end = 0;
 }
 
 /*
@@ -41,6 +43,104 @@ linefree(Line *l)
 	lineinit(l);
 }
 
+static long
+linegaplen(const Line *l)
+{
+	if (l == nil)
+		return 0;
+	if (l->end < l->start)
+		return 0;
+	return l->end - l->start;
+}
+
+/*
+ * linemovegap moves the gap to the given logical byte offset.
+ * After return, l->start == at.
+ */
+static void
+linemovegap(Line *l, long at)
+{
+	long d;
+	long gl;
+
+	if (l == nil)
+		return;
+	if (at < 0)
+		at = 0;
+	if (at > l->n)
+		at = l->n;
+	if (l->s == nil || l->cap <= 0) {
+		l->start = 0;
+		l->end = 0;
+		return;
+	}
+	gl = linegaplen(l);
+	if (at < l->start) {
+		d = l->start - at;
+		memmove(l->s + (l->end - d), l->s + at, (size_t)d);
+		l->start -= d;
+		l->end -= d;
+	} else if (at > l->start) {
+		d = at - l->start;
+		memmove(l->s + l->start, l->s + l->end, (size_t)d);
+		l->start += d;
+		l->end += d;
+	}
+	/* Keep invariants sane if something went wrong. */
+	if (l->start < 0)
+		l->start = 0;
+	if (l->start > l->n)
+		l->start = l->n;
+	if (l->end < l->start)
+		l->end = l->start;
+	if (l->end > l->cap)
+		l->end = l->cap;
+	(void)gl;
+}
+
+/*
+ * lineensuregap ensures the gap has at least need bytes available.
+ */
+static int
+lineensuregap(Line *l, long need)
+{
+	char *ns;
+	long ncap;
+	long rlen;
+	long newend;
+
+	if (l == nil)
+		return -1;
+	if (need < 0)
+		need = 0;
+	if (linegaplen(l) >= need)
+		return 0;
+
+	ncap = l->cap ? l->cap : 32;
+	while (ncap - l->n < need)
+		ncap *= 2;
+
+	ns = malloc((size_t)ncap);
+	if (ns == nil)
+		return -1;
+	/* Copy left side. */
+	if (l->start > 0)
+		memcpy(ns, l->s, (size_t)l->start);
+	/* Copy right side to the end of the new buffer. */
+	rlen = l->n - l->start;
+	newend = ncap - rlen;
+	if (rlen > 0)
+		memcpy(ns + newend, l->s + l->end, (size_t)rlen);
+
+	free(l->s);
+	l->s = ns;
+	l->cap = ncap;
+	l->end = newend;
+	if (l->end < l->start)
+		l->end = l->start;
+	return 0;
+}
+
 /*
  * linecopy deep-copies src into dst.
  *
@@ -55,17 +155,30 @@ linefree(Line *l)
 static int
 linecopy(Line *dst, Line *src)
 {
+	const char *p;
+
 	lineinit(dst);
 	if (src == nil)
 		return 0;
 	if (src->n <= 0)
 		return 0;
-	dst->s = malloc((size_t)src->n);
-	if (dst->s == nil)
-		return -1;
-	memcpy(dst->s, src->s, (size_t)src->n);
-	dst->n = src->n;
+
+	/* Copy via contiguous view of src. */
+	p = linebytes(src);
+	if (p == nil)
+		return 0;
 	dst->cap = src->n;
+	if (dst->cap < 32)
+		dst->cap = 32;
+	dst->s = malloc((size_t)dst->cap);
+	if (dst->s == nil) {
+		lineinit(dst);
+		return -1;
+	}
+	memcpy(dst->s, p, (size_t)src->n);
+	dst->n = src->n;
+	dst->start = src->n;
+	dst->end = dst->cap;
 	return 0;
 }
 
@@ -215,6 +328,7 @@ bufinsertline(Buf *b, long at, const char *s, long n)
 {
 	long i;
 	Line *l;
+	long cap;
 
 	if (at < 0)
 		at = 0;
@@ -229,14 +343,24 @@ bufinsertline(Buf *b, long at, const char *s, long n)
 
 	l = &b->line[at];
 	lineinit(l);
-	if (n > 0) {
-		l->s = malloc((size_t)n);
-		if (l->s == nil)
-			return -1;
-		memcpy(l->s, s, (size_t)n);
-		l->n = n;
-		l->cap = n;
+	if (n < 0)
+		n = 0;
+	if (n > 0 && s == nil)
+		return -1;
+	cap = n;
+	if (cap < 32)
+		cap = 32;
+	l->s = malloc((size_t)cap);
+	if (l->s == nil) {
+		lineinit(l);
+		return -1;
 	}
+	if (n > 0)
+		memcpy(l->s, s, (size_t)n);
+	l->n = n;
+	l->cap = cap;
+	l->start = n;
+	l->end = cap;
 	b->nline++;
 	return 0;
 }
@@ -280,27 +404,6 @@ bufdelline(Buf *b, long at)
  *  - 0 on success.
  *  - -1 on allocation failure.
  */
-static int
-linegrow(Line *l, long need)
-{
-	char *ns;
-	long ncap;
-
-	if (need <= l->cap)
-		return 0;
-
-	ncap = l->cap ? l->cap : 32;
-	while (ncap < need)
-		ncap *= 2;
-
-	ns = realloc(l->s, (size_t)ncap);
-	if (ns == nil)
-		return -1;
-	l->s = ns;
-	l->cap = ncap;
-	return 0;
-}
-
 /*
  * lineinsert inserts bytes into a line at byte offset at.
  *
@@ -317,22 +420,20 @@ linegrow(Line *l, long need)
 int
 lineinsert(Line *l, long at, const char *s, long n)
 {
-	long i;
-
 	if (n <= 0)
 		return 0;
+	if (l == nil || (s == nil && n > 0))
+		return -1;
 	if (at < 0)
 		at = 0;
 	if (at > l->n)
 		at = l->n;
 
-	if (linegrow(l, l->n + n) < 0)
+	linemovegap(l, at);
+	if (lineensuregap(l, n) < 0)
 		return -1;
-
-	for (i = l->n; i > at; i--)
-		l->s[i + n - 1] = l->s[i - 1];
-
-	memcpy(l->s + at, s, (size_t)n);
+	memcpy(l->s + l->start, s, (size_t)n);
+	l->start += n;
 	l->n += n;
 	return 0;
 }
@@ -352,18 +453,46 @@ lineinsert(Line *l, long at, const char *s, long n)
 int
 linedelrange(Line *l, long at, long n)
 {
-	long i;
-
 	if (n <= 0)
 		return 0;
+	if (l == nil)
+		return -1;
 	if (at < 0 || at >= l->n)
 		return -1;
 	if (at + n > l->n)
 		n = l->n - at;
-
-	for (i = at + n; i < l->n; i++)
-		l->s[i - n] = l->s[i];
+	linemovegap(l, at);
+	l->end += n;
 	l->n -= n;
+	return 0;
+}
+
+const char *
+linebytes(Line *l)
+{
+	if (l == nil)
+		return nil;
+	if (l->n <= 0)
+		return l->s;
+	linemovegap(l, l->n);
+	return l->s;
+}
+
+int
+linetake(Line *l, char *s, long n)
+{
+	if (l == nil)
+		return -1;
+	if (n < 0)
+		n = 0;
+	if (n > 0 && s == nil)
+		return -1;
+	free(l->s);
+	l->s = s;
+	l->n = n;
+	l->cap = n;
+	l->start = n;
+	l->end = n;
 	return 0;
 }
 
@@ -433,6 +562,7 @@ bufsave(Buf *b, const char *path)
 	FILE *fp;
 	long i;
 	Line *l;
+	const char *p;
 
 	fp = fopen(path, "w");
 	if (fp == nil)
@@ -440,7 +570,8 @@ bufsave(Buf *b, const char *path)
 
 	for (i = 0; i < b->nline; i++) {
 		l = &b->line[i];
-		if (l->n > 0 && fwrite(l->s, 1, (size_t)l->n, fp) != (size_t)l->n) {
+		p = linebytes(l);
+		if (l->n > 0 && fwrite(p, 1, (size_t)l->n, fp) != (size_t)l->n) {
 			(void)fclose(fp);
 			return -1;
 		}

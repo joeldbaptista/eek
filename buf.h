@@ -2,9 +2,11 @@ typedef struct Line Line;
 typedef struct Buf Buf;
 
 struct Line {
-	char *s;   /* Line contents as raw bytes (typically UTF-8). */
-	long n;    /* Number of bytes currently used in s. */
-	long cap;  /* Allocated capacity of s in bytes. */
+	char *s;    /* Backing storage (raw bytes, typically UTF-8). */
+	long n;     /* Number of bytes in the line (excluding the gap). */
+	long cap;   /* Allocated capacity of s in bytes. */
+	long start; /* Gap start index in s (bytes). */
+	long end;   /* Gap end index in s (bytes). */
 };
 
 struct Buf {
@@ -116,6 +118,30 @@ int bufinsertline(Buf *b, long at, const char *s, long n);
  *  - -1 if at is out of range.
  */
 int bufdelline(Buf *b, long at);
+
+/*
+ * linebytes returns a contiguous view of the line's bytes.
+ *
+ * This function moves the gap to the end of the line (logical offset l->n)
+ * so that the first l->n bytes of l->s are the line contents.
+ *
+ * Returns:
+ *  - pointer to contiguous bytes (may be nil if l is nil or empty).
+ */
+const char *linebytes(Line *l);
+
+/*
+ * linetake replaces the contents of l with an owned byte buffer.
+ *
+ * Parameters:
+ *  - l: line to replace.
+ *  - s: heap-owned buffer (may be nil if n == 0).
+ *  - n: number of bytes in s.
+ *
+ * Returns:
+ *  - 0 on success.
+ */
+int linetake(Line *l, char *s, long n);
 
 /*
  * lineinsert inserts bytes into a Line at a byte offset.

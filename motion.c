@@ -153,16 +153,18 @@ prevutf8(Eek *e, long y, long at)
 	Line *l;
 	unsigned char c;
 	long i;
+	const char *s;
 
 	l = bufgetline(&e->b, y);
 	if (l == nil)
 		return 0;
+	s = linebytes(l);
 	if (at <= 0)
 		return 0;
 
 	i = at - 1;
 	for (; i > 0; i--) {
-		c = (unsigned char)l->s[i];
+		c = (unsigned char)s[i];
 		if ((c & 0xc0) != 0x80)
 			break;
 	}
@@ -178,15 +180,17 @@ nextutf8(Eek *e, long y, long at)
 	Line *l;
 	unsigned char c;
 	long n;
+	const char *s;
 
 	(void)e;
 	l = bufgetline(&e->b, y);
 	if (l == nil)
 		return 0;
+	s = linebytes(l);
 	if (at >= l->n)
 		return l->n;
 
-	c = (unsigned char)l->s[at];
+	c = (unsigned char)s[at];
 	if (c < 0x80)
 		n = 1;
 	else if ((c & 0xe0) == 0xc0)
@@ -257,13 +261,15 @@ long
 peekbyte(Eek *e, long y, long at)
 {
 	Line *l;
+	const char *s;
 
 	l = bufgetline(&e->b, y);
 	if (l == nil)
 		return -1;
+	s = linebytes(l);
 	if (at < 0 || at >= l->n)
 		return -1;
-	return (unsigned char)l->s[at];
+	return (unsigned char)s[at];
 }
 
 /*
@@ -445,6 +451,7 @@ findfwd(Eek *e, long r, long n)
 	char pat[8];
 	long patn;
 	long x;
+	const char *s;
 
 	if (e == nil)
 		return -1;
@@ -456,6 +463,7 @@ findfwd(Eek *e, long r, long n)
 	l = bufgetline(&e->b, e->cy);
 	if (l == nil)
 		return -1;
+	s = linebytes(l);
 	patn = utf8enc(r, pat);
 	if (patn <= 0)
 		return -1;
@@ -464,7 +472,7 @@ findfwd(Eek *e, long r, long n)
 
 	x = nextutf8(e, e->cy, e->cx);
 	for (; x + patn <= l->n; x = nextutf8(e, e->cy, x)) {
-		if (memcmp(l->s + x, pat, (size_t)patn) == 0) {
+		if (memcmp(s + x, pat, (size_t)patn) == 0) {
 			n--;
 			if (n == 0) {
 				e->cx = x;
@@ -491,6 +499,7 @@ findbwd(Eek *e, long r, long n)
 	char pat[8];
 	long patn;
 	long x;
+	const char *s;
 
 	if (e == nil)
 		return -1;
@@ -502,6 +511,7 @@ findbwd(Eek *e, long r, long n)
 	l = bufgetline(&e->b, e->cy);
 	if (l == nil)
 		return -1;
+	s = linebytes(l);
 	patn = utf8enc(r, pat);
 	if (patn <= 0)
 		return -1;
@@ -512,7 +522,7 @@ findbwd(Eek *e, long r, long n)
 
 	x = prevutf8(e, e->cy, e->cx);
 	for (;;) {
-		if (x + patn <= l->n && memcmp(l->s + x, pat, (size_t)patn) == 0) {
+		if (x + patn <= l->n && memcmp(s + x, pat, (size_t)patn) == 0) {
 			n--;
 			if (n == 0) {
 				e->cx = x;

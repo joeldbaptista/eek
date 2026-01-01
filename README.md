@@ -226,16 +226,18 @@ eek keeps the edited text in an in-memory buffer called `Buf` (see `buf.h` / `bu
 At a high level:
 
 - A file is represented as an array of lines.
-- Each line is a growable byte array.
+- Each line is stored as a gap buffer (backing byte array + a movable gap).
 - The editor stores and edits UTF-8 as raw bytes, but cursor movement and rendering step by UTF-8 codepoint boundaries.
 
 Concretely, the data structures are:
 
 ```c
 struct Line {
-	char *s;   /* UTF-8 bytes */
-	long n;    /* number of bytes currently used */
-	long cap;  /* allocated capacity in bytes */
+	char *s;    /* backing storage (raw bytes, typically UTF-8) */
+	long n;     /* number of bytes in the line (excluding the gap) */
+	long cap;   /* allocated capacity of s in bytes */
+	long start; /* gap start index in s (bytes) */
+	long end;   /* gap end index in s (bytes) */
 };
 
 struct Buf {
@@ -249,12 +251,16 @@ Key properties:
 
 - The buffer is line-oriented for simplicity (like many small editors): newline boundaries are represented by separate `Line` entries, not by embedding `\n` bytes into `Line.s`.
 - `bufinit()` ensures there is always at least one line (even for an empty file).
-- Inserting/deleting bytes within a line uses `lineinsert()` and `linedelrange()`.
+- Inserting/deleting bytes within a line uses `lineinsert()` and `linedelrange()` (implemented on top of the gap buffer).
 - Inserting/deleting whole lines uses `bufinsertline()` and `bufdelline()`.
 - Cursor positions (`cx`, `cy`) are stored in *byte offsets*:
 	- `cy` is the line index in `Buf.line[]`.
-	- `cx` is the byte offset within `Line.s`.
+	- `cx` is the byte offset within the line’s logical contents (not a direct pointer into `Line.s`, because the gap may split the backing array).
 	- Helpers like `nextutf8()` / `prevutf8()` ensure the cursor lands on UTF-8 codepoint boundaries when moving.
+
+Implementation note for contributors:
+
+- Many read-only operations want a contiguous `char *` for scanning, `memcmp`, rendering, etc. Use `linebytes(l)`, which moves the gap to the end so the first `l->n` bytes of `l->s` are the line contents.
 
 This “UTF-8 bytes, codepoint-aware movement” approach keeps the storage and editing primitives small, while still behaving sanely on UTF-8 text.
 
