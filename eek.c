@@ -7,7 +7,6 @@
 #include <unistd.h>
 
 #include "eek_internal.h"
-#include "syntax.h"
 
 static void argsinit(Args *a);
 static void argsfree(Args *a);
@@ -20,11 +19,6 @@ static int movedispatch(Eek *e, int mode, const Move *moves, long nmoves, const 
 static int cmdkey(Eek *e, const Key *k);
 static int inskey(Eek *e, const Key *k);
 static int nvkey(Eek *e, const Key *k);
-
-typedef struct SynState SynState;
-struct SynState {
-	int inblock; /* Whether the scanner is inside a block comment. */
-};
 
 static long countval(long n);
 static void setmsg(Eek *e, const char *fmt, ...);
@@ -44,12 +38,7 @@ static int delimpair(long c, char *open, char *close);
 static int findopen(Eek *e, char open, char close, long *oy, long *ox);
 static int findclosefrom(Eek *e, long sy, long sx, char open, char close, long *cy, long *cx);
 
-static void setsyn(Eek *e);
-static void syninit(SynState *s);
-static void synscanuntil(Eek *e, long upto, SynState *s);
-static void synscanline(Line *l, SynState *s);
-static const char *synesc(int hl);
-static void drawattrs(Eek *e, int inv, int hl);
+static void drawattrs(Eek *e, int inv);
 
 static Win *winnewfrom(Eek *e);
 static void winload(Eek *e, Win *w);
@@ -2529,7 +2518,6 @@ tabfree(Tab *t)
 	buffree(&t->b);
 	memset(&t->b, 0, sizeof t->b);
 	t->dirty = 0;
-	t->syntax = Synnone;
 }
 
 static Tab
@@ -2549,8 +2537,6 @@ tabtake(Eek *e)
 	e->ownfname = 0;
 	t.dirty = e->dirty;
 	e->dirty = 0;
-	t.syntax = e->syntax;
-	e->syntax = Synnone;
 	t.layout = e->layout;
 	t.curwin = e->curwin;
 	e->layout = nil;
@@ -2579,7 +2565,6 @@ tabapply(Eek *e, Tab *t)
 	e->fname = t->fname;
 	e->ownfname = t->ownfname;
 	e->dirty = t->dirty;
-	e->syntax = t->syntax;
 	e->layout = t->layout;
 	e->curwin = t->curwin;
 	e->lastsearch = t->lastsearch;
@@ -2663,10 +2648,6 @@ tabswitch(Eek *e, long idx)
 		e->curwin = w;
 	}
 	winload(e, e->curwin);
-	if (e->synenabled)
-		setsyn(e);
-	else
-		e->syntax = Synnone;
 	normalfixcursor(e);
 	return 0;
 }
@@ -2694,7 +2675,6 @@ tabnew(Eek *e, const char *path)
 	e->fname = nil;
 	e->ownfname = 0;
 	e->dirty = 0;
-	e->syntax = Synnone;
 	free(e->lastsearch);
 	e->lastsearch = nil;
 	undofree(e);
@@ -2714,8 +2694,6 @@ tabnew(Eek *e, const char *path)
 		e->ownfname = 1;
 		(void)bufload(&e->b, e->fname);
 		e->dirty = 0;
-		if (e->synenabled)
-			setsyn(e);
 	}
 
 	/* Clear the new tab slot to mark it active. */
@@ -2760,10 +2738,6 @@ tabclose(Eek *e, int force)
 	tabapply(e, &next);
 	e->curtab = newcur;
 	winload(e, e->curwin);
-	if (e->synenabled)
-		setsyn(e);
-	else
-		e->syntax = Synnone;
 	return 0;
 }
 
@@ -3566,180 +3540,21 @@ setmsg(Eek *e, const char *fmt, ...)
 }
 
 /*
- * setsyn sets the active syntax language based on e->fname and synenabled.
- *
- * Parameters:
- *  - e: editor state.
- *
- * Returns:
- *  - void.
- */
-static void
-setsyn(Eek *e)
-{
-	e->syntax = Synnone;
-	if (!e->synenabled)
-		return;
-	e->syntax = synlangfromfname(e->fname);
-}
-
-/*
- * syninit initializes the syntax scanner state.
- *
- * Parameters:
- *  - s: scanner state.
- *
- * Returns:
- *  - void.
- */
-static void
-syninit(SynState *s)
-{
-	s->inblock = 0;
-}
-
-/*
- * synscanline advances the syntax scanner state across a line.
- * This is used to know whether later lines start inside a block comment.
- *
- * Parameters:
- *  - l: line to scan.
- *  - s: scanner state (updated).
- *
- * Returns:
- *  - void.
- */
-static void
-synscanline(Line *l, SynState *s)
-{
-	long i;
-	int instr;
-	unsigned char delim;
-	const char *ls;
-	long ln;
-
-	if (l == nil || l->n == 0)
-		return;
-	ls = linebytes(l);
-	ln = lsz(l->n);
-
-	instr = 0;
-	delim = 0;
-	for (i = 0; i < ln; i++) {
-		unsigned char c, n;
-
-		c = (unsigned char)ls[i];
-		n = (i + 1 < ln) ? (unsigned char)ls[i + 1] : 0;
-
-		if (s->inblock) {
-			if (c == '*' && n == '/') {
-				s->inblock = 0;
-				i++;
-			}
-			continue;
-		}
-		if (instr) {
-			if (c == '\\') {
-				if (i + 1 < ln)
-					i++;
-				continue;
-			}
-			if (c == delim) {
-				instr = 0;
-				delim = 0;
-			}
-			continue;
-		}
-
-		if (c == '"' || c == '\'') {
-			instr = 1;
-			delim = c;
-			continue;
-		}
-		if (c == '/' && n == '/')
-			break;
-		if (c == '/' && n == '*') {
-			s->inblock = 1;
-			i++;
-			continue;
-		}
-	}
-}
-
-/*
- * synscanuntil advances the syntax scanner from the start of the file up to
- * (but not including) line index upto.
- *
- * Parameters:
- *  - e: editor state.
- *  - upto: line index limit.
- *  - s: scanner state (updated).
- *
- * Returns:
- *  - void.
- */
-static void
-synscanuntil(Eek *e, long upto, SynState *s)
-{
-	long y;
-	Line *l;
-
-	if (e->syntax != Sync)
-		return;
-	if (upto <= 0)
-		return;
-	if (upto > lsz(e->b.nline))
-		upto = lsz(e->b.nline);
-	for (y = 0; y < upto; y++) {
-		l = bufgetline(&e->b, y);
-		synscanline(l, s);
-	}
-}
-
-/*
- * synesc maps a highlight class (Hl*) to an ANSI SGR escape string.
- *
- * Parameters:
- *  - hl: highlight class.
- *
- * Returns:
- *  - pointer to a NUL-terminated ANSI escape string.
- */
-static const char *
-synesc(int hl)
-{
-	switch (hl) {
-	case Hlcomment: return SYN_COMMENT;
-	case Hlstring: return SYN_STRING;
-	case Hlnumber: return SYN_NUMBER;
-	case Hlkeyword: return SYN_KEYWORD;
-	case Hltype: return SYN_TYPE;
-	case Hlpreproc: return SYN_PREPROC;
-	case Hlspecial: return SYN_SPECIAL;
-	default: return SYN_NORMAL;
-	}
-}
-
-/*
- * drawattrs writes terminal attributes for a cell: reset, optional inverse,
- * and optional syntax highlight color.
+ * drawattrs writes terminal attributes for a cell: reset + optional inverse.
  *
  * Parameters:
  *  - e: editor state (uses output fd).
  *  - inv: non-zero to apply inverse video.
- *  - hl: highlight class.
  *
  * Returns:
  *  - void.
  */
 static void
-drawattrs(Eek *e, int inv, int hl)
+drawattrs(Eek *e, int inv)
 {
 	termwrite(&e->t, "\x1b[m", 3);
 	if (inv)
 		termwrite(&e->t, "\x1b[7m", 4);
-	if (hl != Hlnone)
-		termwrite(&e->t, synesc(hl), (long)strlen(synesc(hl)));
 }
 
 /*
@@ -4179,8 +3994,8 @@ runinsert(Eek *e, const char *cmd)
  *
  * Parameters:
  *  e: editor state.
- *  opt: option token (e.g. "syntax", "nosyntax", "numbers", "nonumbers",
- *       "relativenumbers", "norelativenumbers").
+ *  opt: option token (e.g. "numbers", "nonumbers", "relativenumbers",
+ *       "norelativenumbers").
  *
  * Returns:
  *  0 on success, -1 if the option is unknown.
@@ -4190,17 +4005,6 @@ setopt(Eek *e, const char *opt)
 {
 	if (opt == nil || *opt == 0)
 		return 0;
-
-	if (strcmp(opt, "syntax") == 0 || strcmp(opt, "syn") == 0) {
-		e->synenabled = 1;
-		setsyn(e);
-		return 0;
-	}
-	if (strcmp(opt, "nosyntax") == 0 || strcmp(opt, "nosyn") == 0) {
-		e->synenabled = 0;
-		e->syntax = Synnone;
-		return 0;
-	}
 
 	if (strcmp(opt, "numbers") == 0 || strcmp(opt, "number") == 0 || strcmp(opt, "nu") == 0) {
 		e->linenumbers = 1;
@@ -4275,9 +4079,8 @@ cmdexec(Eek *e)
 		int changed;
 
 		if (arg == nil || *arg == 0) {
-			setmsg(e, "%s %s %s", e->linenumbers ? "numbers" : "nonumbers",
-				e->relativenumbers ? "relativenumbers" : "norelativenumbers",
-				e->synenabled ? "syntax" : "nosyntax");
+			setmsg(e, "%s %s", e->linenumbers ? "numbers" : "nonumbers",
+				e->relativenumbers ? "relativenumbers" : "norelativenumbers");
 			return 0;
 		}
 
@@ -4298,9 +4101,8 @@ cmdexec(Eek *e)
 			changed = 1;
 		}
 		if (changed)
-			setmsg(e, "%s %s %s", e->linenumbers ? "numbers" : "nonumbers",
-				e->relativenumbers ? "relativenumbers" : "norelativenumbers",
-				e->synenabled ? "syntax" : "nosyntax");
+			setmsg(e, "%s %s", e->linenumbers ? "numbers" : "nonumbers",
+				e->relativenumbers ? "relativenumbers" : "norelativenumbers");
 		return 0;
 	}
 
@@ -4412,7 +4214,6 @@ cmdexec(Eek *e)
 				free(e->fname);
 			e->fname = strdup(arg);
 			e->ownfname = 1;
-			setsyn(e);
 		}
 		if (e->fname == nil || e->fname[0] == 0) {
 			setmsg(e, "No file name");
@@ -4696,10 +4497,6 @@ cmdexec(Eek *e)
 			free(arr);
 		}
 		winload(e, e->curwin);
-		if (e->synenabled)
-			setsyn(e);
-		else
-			e->syntax = Synnone;
 		normalfixcursor(e);
 		return 0;
 	}
@@ -4931,22 +4728,8 @@ draw(Eek *e)
 				gutter = gutterwidth(e, rr.w);
 				numw = gutter ? gutter - 1 : 0;
 				for (y = 0; y < rr.h; y++) {
-					SynState syn;
 					int curinv;
-					int curhl;
-					int instr;
-					unsigned char delim;
-					int inlinecomment;
-					int preproc;
-					int include;
-					int inangle;
-					int blockendpending;
-					long idrem;
-					int idhl;
-					long numrem;
 					long ln;
-					long tmp;
-					long j;
 					int collim;
 
 					filerow = e->rowoff + y;
@@ -4992,48 +4775,8 @@ draw(Eek *e)
 					ln = lsz(l->n);
 					ls = linebytes(l);
 
-					syninit(&syn);
-					synscanuntil(e, filerow, &syn);
 					curinv = 0;
-					curhl = Hlnone;
-					instr = 0;
-					delim = 0;
-					inlinecomment = 0;
-					preproc = 0;
-					include = 0;
-					inangle = 0;
-					blockendpending = 0;
-					idrem = 0;
-					idhl = Hlnone;
-					numrem = 0;
-					if (e->syntax == Sync) {
-						for (tmp = 0; tmp < ln; tmp++) {
-							unsigned char c;
-							c = (unsigned char)ls[tmp];
-							if (c == ' ' || c == '\t')
-								continue;
-							if (c == '#')
-								preproc = 1;
-							break;
-						}
-						if (preproc) {
-							long p;
-							p = 0;
-							while (p < ln && (ls[p] == ' ' || ls[p] == '\t'))
-								p++;
-							if (p < ln && ls[p] == '#')
-								p++;
-							while (p < ln && (ls[p] == ' ' || ls[p] == '\t'))
-								p++;
-							if (p + 7 <= ln && memcmp(ls + p, "include", 7) == 0) {
-								unsigned char c;
-
-								c = (p + 7 < ln) ? (unsigned char)ls[p + 7] : 0;
-								if (c == 0 || c == ' ' || c == '\t')
-									include = 1;
-							}
-						}
-					}
+					drawattrs(e, 0);
 
 					coloff = e->coloff;
 					if (coloff < 0)
@@ -5042,93 +4785,15 @@ draw(Eek *e)
 					tx = 0;
 					for (i = 0; i < ln && rx < collim; ) {
 						int wantinv;
-						int wanthl;
-						int basehl;
-						int openstring;
-						int openangle;
-						unsigned char c, n1;
 
 						wantinv = 0;
 						if (e->vmode == Visualblock)
 							wantinv = invselblock(e, filerow, tx);
 						else
 							wantinv = invsel(e, filerow, i);
-						basehl = preproc ? Hlpreproc : Hlnone;
-						wanthl = basehl;
-						openstring = 0;
-						openangle = 0;
-						c = (unsigned char)ls[i];
-						n1 = (i + 1 < ln) ? (unsigned char)ls[i + 1] : 0;
-
-						if (e->syntax == Sync) {
-							if (inlinecomment || syn.inblock)
-								wanthl = Hlcomment;
-							else if (instr || inangle)
-								wanthl = Hlstring;
-							else if (numrem > 0)
-								wanthl = Hlnumber;
-							else if (idrem > 0) {
-								if (idhl != Hlnone)
-									wanthl = idhl;
-								else
-									wanthl = basehl;
-							}
-
-							if (!inlinecomment && !syn.inblock && !instr && !inangle) {
-								if (c == '/' && n1 == '/') {
-									inlinecomment = 1;
-									wanthl = Hlcomment;
-								}
-								if (!inlinecomment && c == '/' && n1 == '*') {
-									syn.inblock = 1;
-									blockendpending = 0;
-									wanthl = Hlcomment;
-								}
-								if (!inlinecomment && !syn.inblock && (c == '"' || c == '\'')) {
-									openstring = 1;
-									wanthl = Hlstring;
-								}
-								if (include && c == '<') {
-									openangle = 1;
-									wanthl = Hlstring;
-								}
-								if (!openstring && !openangle && !inlinecomment && !syn.inblock) {
-									if ((c >= '0' && c <= '9')) {
-										for (j = i; j < ln; j++) {
-											unsigned char d;
-
-											d = (unsigned char)ls[j];
-											if (!((d >= '0' && d <= '9') || d == '.' || d == 'x' || d == 'X' ||
-												(d >= 'a' && d <= 'f') || (d >= 'A' && d <= 'F')))
-												break;
-										}
-										numrem = j - i;
-										wanthl = Hlnumber;
-									}
-									if ((c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) &&
-											(i == 0 || !isword((unsigned char)ls[i - 1]))) {
-										for (j = i; j < ln; j++) {
-											unsigned char d;
-
-												d = (unsigned char)ls[j];
-											if (!(d == '_' || (d >= 'A' && d <= 'Z') || (d >= 'a' && d <= 'z') || (d >= '0' && d <= '9')))
-												break;
-										}
-											idhl = synwordkind_lang(e->syntax, ls + i, j - i);
-										idrem = j - i;
-										if (idhl != Hlnone)
-											wanthl = idhl;
-										else
-											wanthl = basehl;
-									}
-								}
-							}
-						}
-
-						if (wantinv != curinv || wanthl != curhl) {
-							drawattrs(e, wantinv, wanthl);
+						if (wantinv != curinv) {
+							drawattrs(e, wantinv);
 							curinv = wantinv;
-							curhl = wanthl;
 						}
 
 						if (ls[i] == '\t') {
@@ -5141,10 +4806,9 @@ draw(Eek *e)
 										int winv;
 
 										winv = invselblock(e, filerow, tx);
-										if (winv != curinv || wanthl != curhl) {
-											drawattrs(e, winv, wanthl);
+										if (winv != curinv) {
+											drawattrs(e, winv);
 											curinv = winv;
-											curhl = wanthl;
 										}
 									}
 									termwrite(&e->t, " ", 1);
@@ -5153,10 +4817,6 @@ draw(Eek *e)
 								tx++;
 							}
 							i++;
-							if (idrem > 0)
-								idrem--;
-							if (numrem > 0)
-								numrem--;
 							continue;
 						}
 						ni = nextutf8(e, filerow, i);
@@ -5169,40 +4829,6 @@ draw(Eek *e)
 							termwrite(&e->t, &ls[i], n);
 							rx++;
 						}
-						if (e->syntax == Sync) {
-							if (openstring) {
-								instr = 1;
-								delim = c;
-							}
-							if (openangle) {
-								inangle = 1;
-							}
-							if (instr && !openstring) {
-								if (c == '\\') {
-									if (i + 1 < ln)
-										i++;
-								} else if (c == delim) {
-									instr = 0;
-									delim = 0;
-								}
-							}
-							if (inangle && !openangle) {
-								if (c == '>')
-									inangle = 0;
-							}
-							if (syn.inblock) {
-								if (blockendpending && c == '/') {
-									syn.inblock = 0;
-									blockendpending = 0;
-								} else if (c == '*' && n1 == '/') {
-									blockendpending = 1;
-								}
-							}
-							if (idrem > 0)
-								idrem--;
-							if (numrem > 0)
-								numrem--;
-						}
 						tx++;
 						i += n;
 					}
@@ -5211,17 +4837,12 @@ draw(Eek *e)
 						long txcur;
 
 						/* Trailing fill: spaces are real columns in block selection. */
-						if (curhl != Hlnone) {
-							drawattrs(e, curinv, Hlnone);
-							curhl = Hlnone;
-						}
 						while (rx < collim) {
 							txcur = coloff + (rx - gutter);
 							winv = invselblock(e, filerow, txcur);
 							if (winv != curinv) {
-								drawattrs(e, winv, Hlnone);
+								drawattrs(e, winv);
 								curinv = winv;
-								curhl = Hlnone;
 							}
 							termwrite(&e->t, " ", 1);
 							rx++;
@@ -5229,7 +4850,7 @@ draw(Eek *e)
 						if (curinv)
 							termwrite(&e->t, "\x1b[m", 3);
 					} else {
-						if (curinv || curhl != Hlnone)
+						if (curinv)
 							termwrite(&e->t, "\x1b[m", 3);
 						while (rx++ < collim)
 							termwrite(&e->t, " ", 1);
@@ -7716,7 +7337,6 @@ main(int argc, char **argv)
 
 	memset(&e, 0, sizeof e);
 	bufinit(&e.b);
-	e.synenabled = Syntaxhighlight;
 	e.cmdprefix = ':';
 	if (tabinit1(&e) < 0)
 		die("Out of memory");
@@ -7725,7 +7345,6 @@ main(int argc, char **argv)
 		e.fname = argv[1];
 		e.ownfname = 0;
 		(void)bufload(&e.b, e.fname);
-		setsyn(&e);
 	}
 
 	terminit(&e.t);

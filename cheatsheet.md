@@ -267,9 +267,6 @@ Options (`:set`):
 - Relative numbers:
   - On: `:set relativenumbers` (aliases: `relativenumber`, `rnu`)
   - Off: `:set norelativenumbers` (aliases: `norelativenumber`, `nornu`)
-- Syntax highlighting:
-  - On: `:set syntax` (alias: `syn`)
-  - Off: `:set nosyntax` (alias: `nosyn`)
 
 Run shell command (`:run`):
 

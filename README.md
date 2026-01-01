@@ -299,7 +299,7 @@ Undo captures:
 Undo does *not* capture:
 
 - The yank register contents.
-- Configuration (`:set` options) or syntax highlighting state.
+- Configuration (`:set` options).
 - Any state that is not required to recreate the text + view.
 
 #### How snapshots are created (when undopush happens)

@@ -107,7 +107,6 @@ struct Tab {
 	char *fname;      /* Tab-local file name (may be nil). */
 	int ownfname;     /* Non-zero if fname is heap-owned and must be freed. */
 	long dirty;       /* Tab-local dirty flag (unsaved edits). */
-	int syntax;       /* Tab-local syntax selection (Syn*). */
 	Node *layout;     /* Tab-local window layout tree. */
 	Win *curwin;      /* Tab-local active window (leaf in layout). */
 	char *lastsearch; /* Tab-local last search pattern (heap-owned) or nil. */
@@ -116,24 +115,6 @@ struct Tab {
 	long capundo;     /* Allocated capacity of undo[] in entries. */
 	int undopending;  /* Groups multiple edits into one undo step when non-zero. */
 	int inundo;       /* Non-zero while restoring an undo snapshot. */
-};
-
-/* Syntax language identifiers used for highlighting. */
-enum {
-	Synnone, /* No highlighting. */
-	Sync,    /* C-like highlighting (used for .c/.h). */
-};
-
-/* Highlight classes used by the syntax scanner for token categories. */
-enum {
-	Hlnone,    /* No special highlight. */
-	Hlcomment, /* Comment text. */
-	Hlstring,  /* String/character literals. */
-	Hlnumber,  /* Numeric literals. */
-	Hlkeyword, /* Language keywords. */
-	Hltype,    /* Type names (builtins). */
-	Hlpreproc, /* Preprocessor directives/markers. */
-	Hlspecial, /* Special identifiers (e.g. stdio handles). */
 };
 
 /* Editor modes (vi-like). */
@@ -156,8 +137,6 @@ struct Eek {
 	char *fname;         /* Current file name (may be nil). */
 	int ownfname;        /* Whether fname is heap-owned and must be freed. */
 	int mode;            /* Current editor mode (Modenormal/Modeinsert/...). */
-	int synenabled;      /* User toggle for syntax highlighting. */
-	int syntax;          /* Active syntax language (Syn*). */
 	int cursorshape;     /* Current cursor shape (DECSCUSR value). */
 	int linenumbers;     /* Show absolute line numbers. */
 	int relativenumbers; /* Show relative line numbers. */
