@@ -98,7 +98,6 @@ static void
 linemovegap(Line *l, size_t at)
 {
 	size_t d;
-	size_t gl;
 
 	if (l == nil)
 		return;
@@ -109,7 +108,6 @@ linemovegap(Line *l, size_t at)
 		l->end = 0;
 		return;
 	}
-	gl = linegaplen(l);
 	if (at < l->start) {
 		d = l->start - at;
 		memmove(l->s + (l->end - d), l->s + at, (size_t)d);
@@ -128,7 +126,6 @@ linemovegap(Line *l, size_t at)
 		l->end = l->start;
 	if (l->end > l->cap)
 		l->end = l->cap;
-	(void)gl;
 }
 
 /*
