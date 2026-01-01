@@ -1,7 +1,7 @@
 # build
 *.o
 eek
-docs/*.pdf
+docs/*
 
 # local config
 config.h
