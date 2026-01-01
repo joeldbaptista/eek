@@ -6,6 +6,7 @@ Notes:
 
 - eek is **modal**: NORMAL / INSERT / VISUAL / command-line (`:` and `/`).
 - Many NORMAL-mode commands accept **counts** (e.g. `3j`, `12G`, `4dd`, `d3w`, `3f.`).
+- Marks/bookmarks: set `m{letter}` (e.g. `ma`), jump `'{letter}` (e.g. `'a`) — stored per tab.
 - Cursor positions are byte offsets in UTF-8 text; movement is UTF-8 aware.
 - Long lines are supported: eek will **horizontally scroll** as needed to keep the cursor visible.
 
