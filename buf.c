@@ -115,7 +115,7 @@ bufensuregap(Buf *b, size_t need)
 		return 0;
 
 	ncap = b->cap ? b->cap : 8;
-	while (ncap - b->nline < need) {
+	for (; ncap - b->nline < need; ) {
 		if (dblsz(&ncap) < 0)
 			return -1;
 	}
@@ -246,7 +246,7 @@ lineensuregap(Line *l, size_t need)
 		return 0;
 
 	ncap = l->cap ? l->cap : (size_t)LINE_MIN_CAP;
-	while (ncap - l->n < need) {
+	for (; ncap - l->n < need; ) {
 		if (dblsz(&ncap) < 0)
 			return -1;
 	}
@@ -357,12 +357,12 @@ buffree(Buf *b)
 {
 	size_t i;
 	size_t gl;
+	size_t pi;
 
 	if (b == nil)
 		return;
 	gl = bufgaplen(b);
 	for (i = 0; i < b->nline; i++) {
-		size_t pi;
 		pi = (i < b->start) ? i : (i + gl);
 		linefree(&b->line[pi]);
 	}
@@ -391,19 +391,17 @@ bufcopy(Buf *dst, Buf *src)
 	size_t i;
 	Buf tmp;
 	Line *sl;
+	int rc;
+
+	rc = -1;
+	tmp = (Buf){0};
 
 	if (dst == nil || src == nil)
-		return -1;
-
-	tmp.line = nil;
-	tmp.nline = 0;
-	tmp.cap = 0;
-	tmp.start = 0;
-	tmp.end = 0;
+		goto invalid_params;
 
 	/* Prepare capacity up-front; don't mutate dst unless we succeed. */
 	if (bufensuregap(&tmp, src->nline) < 0)
-		return -1;
+		goto out;
 	/* Append-copies each line; keep gap at end. */
 	bufmovegap(&tmp, 0);
 	for (i = 0; i < src->nline; i++) {
@@ -412,21 +410,25 @@ bufcopy(Buf *dst, Buf *src)
 			continue;
 		/* Ensure there is room for one more element. */
 		if (bufensuregap(&tmp, 1) < 0) {
-			buffree(&tmp);
-			return -1;
+			goto out;
 		}
 		bufmovegap(&tmp, tmp.nline);
 		if (linecopy(&tmp.line[tmp.start], sl) < 0) {
-			buffree(&tmp);
-			return -1;
+			goto out;
 		}
 		tmp.start++;
 		tmp.nline++;
 	}
 
 	bufswap(dst, &tmp);
+	rc = 0;
+
+	out:
 	buffree(&tmp);
-	return 0;
+	return rc;
+
+	invalid_params:
+	return -1;
 }
 
 /*
@@ -699,10 +701,16 @@ bufload(Buf *b, const char *path)
 	char *line;
 	size_t cap;
 	ssize_t n;
+	int rc;
+
+	rc = -1;
+	fp = nil;
+	line = nil;
+	cap = 0;
 
 	fp = fopen(path, "r");
 	if (fp == nil)
-		return -1;
+		goto out;
 
 	buffree(b);
 	b->line = nil;
@@ -711,28 +719,26 @@ bufload(Buf *b, const char *path)
 	b->start = 0;
 	b->end = 0;
 
-	line = nil;
-	cap = 0;
-	while ((n = getline(&line, &cap, fp)) >= 0) {
-		while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'))
-			n--;
+	for (; (n = getline(&line, &cap, fp)) >= 0; ) {
+		for (; n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'); n--)
+			;
 		if (n < 0) {
-			free(line);
-			(void)fclose(fp);
-			return -1;
+			goto out;
 		}
 		if (bufinsertline(b, (long)b->nline, line, (size_t)n) < 0) {
-			free(line);
-			(void)fclose(fp);
-			return -1;
+			goto out;
 		}
 	}
-	free(line);
-	(void)fclose(fp);
 
 	if (b->nline == 0)
 		(void)bufinsertline(b, 0, "", 0);
-	return 0;
+	rc = 0;
+
+	out:
+	free(line);
+	if (fp != nil)
+		(void)fclose(fp);
+	return rc;
 }
 
 /*
@@ -754,10 +760,14 @@ bufsave(Buf *b, const char *path)
 	size_t i;
 	Line *l;
 	const char *p;
+	int rc;
+
+	rc = -1;
+	fp = nil;
 
 	fp = fopen(path, "w");
 	if (fp == nil)
-		return -1;
+		goto out;
 
 	for (i = 0; i < b->nline; i++) {
 		l = bufgetline(b, (long)i);
@@ -765,16 +775,22 @@ bufsave(Buf *b, const char *path)
 			continue;
 		p = linebytes(l);
 		if (l->n > 0 && fwrite(p, 1, l->n, fp) != l->n) {
-			(void)fclose(fp);
-			return -1;
+			goto out;
 		}
 		if (fputc('\n', fp) == EOF) {
-			(void)fclose(fp);
-			return -1;
+			goto out;
 		}
 	}
 
-	if (fclose(fp) != 0)
-		return -1;
-	return 0;
+	if (fclose(fp) != 0) {
+		fp = nil;
+		goto out;
+	}
+	fp = nil;
+	rc = 0;
+
+	out:
+	if (fp != nil)
+		(void)fclose(fp);
+	return rc;
 }

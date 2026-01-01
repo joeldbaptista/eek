@@ -19,6 +19,7 @@ utf8dec1(const char *s, long n, long *adv)
 	unsigned char c;
 	long r;
 	long m;
+	long b1, b2, b3;
 
 	if (adv)
 		*adv = 0;
@@ -42,7 +43,6 @@ utf8dec1(const char *s, long n, long *adv)
 	}
 	/* 3-byte */
 	if ((c & 0xf0) == 0xe0 && n >= 3) {
-		long b1, b2;
 		b1 = (unsigned char)s[1];
 		b2 = (unsigned char)s[2];
 		if ((b1 & 0xc0) != 0x80 || (b2 & 0xc0) != 0x80)
@@ -54,7 +54,6 @@ utf8dec1(const char *s, long n, long *adv)
 	}
 	/* 4-byte */
 	if ((c & 0xf8) == 0xf0 && n >= 4) {
-		long b1, b2, b3;
 		b1 = (unsigned char)s[1];
 		b2 = (unsigned char)s[2];
 		b3 = (unsigned char)s[3];

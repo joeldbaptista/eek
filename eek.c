@@ -255,7 +255,10 @@ static int
 delend(Eek *e, Args *a)
 {
 	Line *l;
+	Line *nl;
 	const char *ls;
+	const char *nls;
+	char nlsep;
 	long len;
 	long nlines;
 	long i;
@@ -280,10 +283,6 @@ delend(Eek *e, Args *a)
 			(void)linedelrange(l, e->cx, len - e->cx);
 	}
 	for (i = 1; i < nlines; i++) {
-		Line *nl;
-		char nlsep;
-		const char *nls;
-
 		nl = bufgetline(&e->b, e->cy + 1);
 		if (nl == nil)
 			break;
@@ -397,6 +396,8 @@ mapset(Eek *e, unsigned modes, long lhs, const char *rhs)
 {
 	long i;
 	char *p;
+	long ncap;
+	void *np;
 
 	if (e == nil || rhs == nil)
 		return -1;
@@ -417,9 +418,6 @@ mapset(Eek *e, unsigned modes, long lhs, const char *rhs)
 	}
 
 	if (e->nmaps + 1 > e->capmaps) {
-		long ncap;
-		void *np;
-
 		ncap = e->capmaps > 0 ? e->capmaps * 2 : 16;
 		np = realloc(e->maps, (size_t)ncap * sizeof e->maps[0]);
 		if (np == nil)
@@ -466,6 +464,11 @@ mapapply(Eek *e, int mode, long lhs)
 	long adv;
 	long r;
 	KeyEvent ev;
+	long cap;
+	long *rv;
+	long nr;
+	long ncap;
+	void *np;
 
 	if (e == nil)
 		return 0;
@@ -483,23 +486,16 @@ mapapply(Eek *e, int mode, long lhs)
 		n = (long)strlen(s);
 		/* Collect runes first so we can push in reverse order. */
 		{
-			long cap;
-			long *rv;
-			long nr;
-
 			cap = 64;
 			rv = malloc((size_t)cap * sizeof rv[0]);
 			if (rv == nil)
 				return 0;
 			nr = 0;
-			while (n > 0) {
+			for (; n > 0; ) {
 				r = utf8dec1(s, n, &adv);
 				if (adv <= 0)
 					break;
 				if (nr + 1 > cap) {
-					long ncap;
-					void *np;
-
 					ncap = cap * 2;
 					np = realloc(rv, (size_t)ncap * sizeof rv[0]);
 					if (np == nil) {
@@ -513,8 +509,7 @@ mapapply(Eek *e, int mode, long lhs)
 				s += adv;
 				n -= adv;
 			}
-			while (nr > 0) {
-				nr--;
+			for (; nr > 0; nr--) {
 				ev.k.kind = Keyrune;
 				ev.k.value = rv[nr];
 				ev.nomap = 1;
@@ -571,10 +566,9 @@ argspush(Args *a, long v)
 		return 0;
 	}
 	cap = a->heapcap > 0 ? a->heapcap : 16;
-	while (cap < a->n - (int)(sizeof a->v / sizeof a->v[0]) + 1) {
+	for (; cap < a->n - (int)(sizeof a->v / sizeof a->v[0]) + 1; cap *= 2) {
 		if (cap > 1<<20)
 			break;
-		cap *= 2;
 	}
 	if (cap < a->n - (int)(sizeof a->v / sizeof a->v[0]) + 1)
 		return -1;
@@ -731,6 +725,7 @@ vsellines(Eek *e, long *y0, long *y1)
 {
 	long a, b;
 	long max;
+	long t;
 
 	if (y0)
 		*y0 = 0;
@@ -743,7 +738,6 @@ vsellines(Eek *e, long *y0, long *y1)
 	a = e->vay;
 	b = e->cy;
 	if (a > b) {
-		long t;
 		t = a;
 		a = b;
 		b = t;
@@ -785,13 +779,20 @@ static int
 parseaddr(Eek *e, char **pp, long *out)
 {
 	char *p;
+	char *end;
+	char *q;
+	char *pat;
 	long base;
+	long n;
+	long y;
+	long sign;
+	long off;
 
 	if (e == nil || pp == nil || *pp == nil || out == nil)
 		return -1;
 	p = *pp;
-	while (*p == ' ' || *p == '\t')
-		p++;
+	for (; *p == ' ' || *p == '\t'; p++)
+		;
 	if (*p == 0)
 		return 0;
 
@@ -803,9 +804,6 @@ parseaddr(Eek *e, char **pp, long *out)
 		base = e->b.nline > 0 ? e->b.nline - 1 : 0;
 		p++;
 	} else if (*p >= '0' && *p <= '9') {
-		char *end;
-		long n;
-
 		errno = 0;
 		n = strtol(p, &end, 10);
 		if (end == p || errno)
@@ -813,15 +811,10 @@ parseaddr(Eek *e, char **pp, long *out)
 		base = n - 1;
 		p = end;
 	} else if (*p == '/') {
-		char *q;
-		long n;
-		char *pat;
-		long y;
-
 		p++;
 		q = p;
-		while (*q && *q != '/')
-			q++;
+		for (; *q && *q != '/'; q++)
+			;
 		if (*q != '/')
 			return -1;
 		n = (long)(q - p);
@@ -841,12 +834,8 @@ parseaddr(Eek *e, char **pp, long *out)
 	}
 
 	for (;;) {
-		long sign;
-		char *end;
-		long off;
-
-		while (*p == ' ' || *p == '\t')
-			p++;
+		for (; *p == ' ' || *p == '\t'; p++)
+			;
 		if (*p != '+' && *p != '-')
 			break;
 		sign = (*p == '-') ? -1 : 1;
@@ -892,6 +881,17 @@ subline(regex_t *re, const char *repl, int global, Line *l, long *nsub)
 	long at;
 	int rc;
 	const char *ls;
+	int ret;
+	long so, eo;
+	long need;
+	long matchlen;
+	long repln;
+	long ncap;
+	char *p;
+
+	ret = -1;
+	in = nil;
+	out = nil;
 
 	if (nsub)
 		*nsub = 0;
@@ -901,11 +901,9 @@ subline(regex_t *re, const char *repl, int global, Line *l, long *nsub)
 
 	in = malloc((size_t)l->n + 1);
 	if (in == nil)
-		return -1;
+		goto out;
 	memcpy(in, ls, (size_t)l->n);
 	in[l->n] = 0;
-
-	out = nil;
 	outn = 0;
 	outcap = 0;
 	at = 0;
@@ -917,11 +915,6 @@ subline(regex_t *re, const char *repl, int global, Line *l, long *nsub)
 		if (m[0].rm_so < 0 || m[0].rm_eo < 0)
 			break;
 		{
-			long so, eo;
-			long need;
-			long matchlen;
-			long repln;
-
 			so = at + (long)m[0].rm_so;
 			eo = at + (long)m[0].rm_eo;
 			if (so < at)
@@ -933,17 +926,12 @@ subline(regex_t *re, const char *repl, int global, Line *l, long *nsub)
 
 			need = outn + (so - at) + repln + (l->n - eo) + 1;
 			if (need > outcap) {
-				long ncap;
-				char *p;
-
 				ncap = outcap > 0 ? outcap * 2 : 64;
-				while (ncap < need)
-					ncap *= 2;
+				for (; ncap < need; ncap *= 2)
+					;
 				p = realloc(out, (size_t)ncap);
 				if (p == nil) {
-					free(out);
-					free(in);
-					return -1;
+					goto out;
 				}
 				out = p;
 				outcap = ncap;
@@ -979,20 +967,15 @@ subline(regex_t *re, const char *repl, int global, Line *l, long *nsub)
 	}
 
 	if (out == nil) {
-		free(in);
-		return 0;
+		ret = 0;
+		goto out;
 	}
 	if (at < lsz(l->n)) {
-		long need;
-		char *p;
-
 		need = outn + (l->n - at) + 1;
 		if (need > outcap) {
 			p = realloc(out, (size_t)need);
 			if (p == nil) {
-				free(out);
-				free(in);
-				return -1;
+				goto out;
 			}
 			out = p;
 			outcap = need;
@@ -1003,21 +986,26 @@ subline(regex_t *re, const char *repl, int global, Line *l, long *nsub)
 
 	if (outn == lsz(l->n) && memcmp(out, ls, (size_t)l->n) == 0) {
 		free(out);
-		free(in);
+		out = nil;
 		if (nsub)
 			*nsub = 0;
-		return 0;
+		ret = 0;
+		goto out;
 	}
 	if (outcap != outn) {
-		char *p;
 		p = realloc(out, (size_t)outn);
 		if (p != nil)
 			out = p;
 		outcap = outn;
 	}
 	(void)linetake(l, out, outn);
+	out = nil;
+	ret = 0;
+
+	out:
+	free(out);
 	free(in);
-	return 0;
+	return ret;
 }
 
 /*
@@ -1046,6 +1034,7 @@ subexec(Eek *e, char *line)
 	long a0, a1;
 	int havea0;
 	int havea1;
+	int r;
 	regex_t re;
 	int reok;
 	char *old;
@@ -1054,13 +1043,16 @@ subexec(Eek *e, char *line)
 	long y;
 	long nsub;
 	long nline;
+	long t;
+	Line *l;
+	long nsl;
 
 	if (e == nil || line == nil)
 		return 0;
 
 	p = line;
-	while (*p == ' ' || *p == '\t')
-		p++;
+	for (; *p == ' ' || *p == '\t'; p++)
+		;
 	if (*p == 0)
 		return 0;
 
@@ -1076,8 +1068,6 @@ subexec(Eek *e, char *line)
 		havea0 = havea1 = 1;
 		p++;
 	} else {
-		int r;
-
 		r = parseaddr(e, &p, &a0);
 		if (r < 0)
 			return 1;
@@ -1099,8 +1089,8 @@ subexec(Eek *e, char *line)
 		}
 	}
 
-	while (*p == ' ' || *p == '\t')
-		p++;
+	for (; *p == ' ' || *p == '\t'; p++)
+		;
 	if (*p != 's')
 		return 0;
 	p++;
@@ -1118,23 +1108,22 @@ subexec(Eek *e, char *line)
 	p++;
 
 	old = p;
-	while (*p && *p != '/')
-		p++;
+	for (; *p && *p != '/'; p++)
+		;
 	if (*p != '/')
 		return 1;
 	*p++ = 0;
 
 	new = p;
-	while (*p && *p != '/')
-		p++;
+	for (; *p && *p != '/'; p++)
+		;
 	if (*p != '/')
 		return 1;
 	*p++ = 0;
 
-	while (*p) {
+	for (; *p; p++) {
 		if (*p == 'g')
 			global = 1;
-		p++;
 	}
 
 	reok = 0;
@@ -1145,7 +1134,6 @@ subexec(Eek *e, char *line)
 	reok = 1;
 
 	if (a0 > a1) {
-		long t;
 		t = a0;
 		a0 = a1;
 		a1 = t;
@@ -1157,39 +1145,35 @@ subexec(Eek *e, char *line)
 
 	if (undopush(e) < 0) {
 		setmsg(e, "Out of memory");
-		if (reok)
-			regfree(&re);
-		return 1;
+		goto out;
 	}
 
 	nsub = 0;
 	nline = 0;
 	for (y = a0; y <= a1 && y < lsz(e->b.nline); y++) {
-		Line *l;
-		long nsl;
-
 		l = bufgetline(&e->b, y);
 		if (l == nil)
 			continue;
 		nsl = 0;
 		if (subline(&re, new, global, l, &nsl) < 0) {
 			setmsg(e, "Out of memory");
-			regfree(&re);
-			return 1;
+			goto out;
 		}
 		if (nsl > 0) {
 			nsub += nsl;
 			nline++;
 		}
 	}
-	regfree(&re);
-
 	if (nsub == 0) {
 		setmsg(e, "Pattern not found");
-		return 1;
+		goto out;
 	}
 	e->dirty = 1;
 	setmsg(e, "%ld substitutions on %ld lines", nsub, nline);
+
+	out:
+	if (reok)
+		regfree(&re);
 	return 1;
 }
 
@@ -1418,6 +1402,13 @@ vsinnerword(Eek *e)
 	long r;
 	int cls;
 	long x0, x1;
+	long p;
+	long np;
+	long pp;
+	long px;
+	long pr;
+	long nr;
+	long nx;
 
 	if (e == nil)
 		return -1;
@@ -1440,13 +1431,9 @@ vsinnerword(Eek *e)
 	r = (pos < len) ? utf8dec1(ls + pos, len - pos, &adv) : -1;
 	cls = isword(r) ? 1 : (ispunctword(r) ? 2 : 0);
 	if (cls == 0) {
-		long p;
-
 		/* Try to find the next word on this line. */
 		p = pos;
 		for (;;) {
-			long np;
-
 			if (p >= len)
 				break;
 			r = utf8dec1(ls + p, len - p, &adv);
@@ -1465,8 +1452,6 @@ vsinnerword(Eek *e)
 		if (cls == 0) {
 			p = pos;
 			for (;;) {
-				long pp;
-
 				if (p <= 0)
 					break;
 				pp = prevutf8(e, y, p);
@@ -1488,9 +1473,6 @@ vsinnerword(Eek *e)
 	/* Scan left to word start. */
 	x0 = pos;
 	for (;;) {
-		long px;
-		long pr;
-
 		px = prevutf8(e, y, x0);
 		if (px >= x0)
 			break;
@@ -1508,9 +1490,6 @@ vsinnerword(Eek *e)
 	/* Scan right to exclusive word end. */
 	x1 = nextutf8(e, y, pos);
 	for (;;) {
-		long nr;
-		long nx;
-
 		if (x1 >= len)
 			break;
 		nr = utf8dec1(ls + x1, len - x1, &adv);
@@ -1597,6 +1576,7 @@ findopen(Eek *e, char open, char close, long *oy, long *ox)
 	long depth;
 	const char *ls;
 	long ln;
+	unsigned char c;
 
 	depth = 0;
 	for (y = e->cy; y >= 0; y--) {
@@ -1614,8 +1594,6 @@ findopen(Eek *e, char open, char close, long *oy, long *ox)
 				x = ln - 1;
 		}
 		for (; x >= 0; x--) {
-			unsigned char c;
-
 			c = (unsigned char)ls[x];
 			if (c == (unsigned char)close)
 				depth++;
@@ -1654,6 +1632,7 @@ findclosefrom(Eek *e, long sy, long sx, char open, char close, long *cy, long *c
 	long depth;
 	const char *ls;
 	long ln;
+	unsigned char c;
 
 	depth = 0;
 	for (y = sy; y < lsz(e->b.nline); y++) {
@@ -1666,8 +1645,6 @@ findclosefrom(Eek *e, long sy, long sx, char open, char close, long *cy, long *c
 		if (y == sy)
 			x = sx + 1;
 		for (; x < ln; x++) {
-			unsigned char c;
-
 			c = (unsigned char)ls[x];
 			if (c == (unsigned char)open)
 				depth++;
@@ -1702,15 +1679,18 @@ static int
 delrange(Eek *e, long y0, long x0, long y1, long x1, int yank)
 {
 	Line *l0, *l1;
+	const char *l1s;
 	long i;
 	long nline;
+	long ty, tx;
+	long l0n;
+	long l1n;
 
 	if (undopush(e) < 0)
 		return -1;
 	nline = lsz(e->b.nline);
 
 	if (y1 < y0 || (y1 == y0 && x1 < x0)) {
-		long ty, tx;
 		ty = y0;
 		tx = x0;
 		y0 = y1;
@@ -1729,8 +1709,6 @@ delrange(Eek *e, long y0, long x0, long y1, long x1, int yank)
 		(void)yankrange(e, y0, x0, y1, x1);
 
 	if (y0 == y1) {
-		long l0n;
-
 		l0 = bufgetline(&e->b, y0);
 		if (l0 == nil)
 			return -1;
@@ -1764,8 +1742,6 @@ delrange(Eek *e, long y0, long x0, long y1, long x1, int yank)
 
 	/* truncate start of l1 */
 	{
-		long l1n;
-
 		l1n = lsz(l1->n);
 	if (x1 < 0)
 		x1 = 0;
@@ -1777,8 +1753,6 @@ delrange(Eek *e, long y0, long x0, long y1, long x1, int yank)
 
 	/* truncate end of l0 */
 	{
-		long l0n;
-
 		l0n = lsz(l0->n);
 	if (x0 < 0)
 		x0 = 0;
@@ -1789,7 +1763,6 @@ delrange(Eek *e, long y0, long x0, long y1, long x1, int yank)
 	}
 
 	if (l1->n > 0) {
-		const char *l1s;
 		l1s = linebytes(l1);
 		(void)lineinsert(l0, l0->n, l1s, l1->n);
 	}
@@ -1977,8 +1950,8 @@ blockappend(Eek *e, const char *s, long n)
 		return 0;
 	if (e->blockn + n > e->blockcap) {
 		ncap = e->blockcap > 0 ? e->blockcap * 2 : 64;
-		while (ncap < e->blockn + n)
-			ncap *= 2;
+		for (; ncap < e->blockn + n; ncap *= 2)
+			;
 		p = realloc(e->blockbuf, (size_t)ncap);
 		if (p == nil)
 			return -1;
@@ -2000,8 +1973,8 @@ blockpop(Eek *e)
 	if (e->blockn <= 0)
 		return;
 	i = e->blockn - 1;
-	while (i > 0 && ((unsigned char)e->blockbuf[i] & 0xc0) == 0x80)
-		i--;
+	for (; i > 0 && ((unsigned char)e->blockbuf[i] & 0xc0) == 0x80; i--)
+		;
 	e->blockn = i;
 }
 
@@ -2060,9 +2033,9 @@ yankrange(Eek *e, long y0, long x0, long y1, long x1)
 	long start;
 	long end;
 	long ln;
+	long ty, tx;
 
 	if (y1 < y0 || (y1 == y0 && x1 < x0)) {
-		long ty, tx;
 		ty = y0;
 		tx = x0;
 		y0 = y1;
@@ -2256,10 +2229,8 @@ ndigits(long n)
 	if (n < 0)
 		n = -n;
 	d = 1;
-	while (n >= 10) {
-		n /= 10;
+	for (; n >= 10; n /= 10)
 		d++;
-	}
 	return d;
 }
 
@@ -2587,8 +2558,8 @@ tabsensure(Eek *e, long n)
 	if (e->captab >= n)
 		return 0;
 	cap = e->captab > 0 ? e->captab : 4;
-	while (cap < n)
-		cap *= 2;
+	for (; cap < n; cap *= 2)
+		;
 	p = realloc(e->tab, (size_t)cap * sizeof e->tab[0]);
 	if (p == nil)
 		return -1;
@@ -2618,6 +2589,7 @@ tabswitch(Eek *e, long idx)
 {
 	Tab t;
 	long max;
+	Win *w;
 
 	if (e == nil)
 		return -1;
@@ -2639,7 +2611,6 @@ tabswitch(Eek *e, long idx)
 	max = e->b.nline > 0 ? e->b.nline - 1 : 0;
 	e->cy = clamp(e->cy, 0, max);
 	if (e->layout == nil || e->curwin == nil) {
-		Win *w;
 		w = malloc(sizeof *w);
 		if (w == nil)
 			return -1;
@@ -2898,37 +2869,38 @@ splitcur(Eek *e, int vertical)
 	Node *split;
 	Win *nw;
 	int isleft;
+	int rc;
 
 	if (e == nil || e->layout == nil || e->curwin == nil)
 		return -1;
 
+	rc = -1;
+	nw = nil;
+	leaf = nil;
+	parent = nil;
+	a = nil;
+	b = nil;
+	split = nil;
+
 	winstore(e);
 	nw = winnewfrom(e);
 	if (nw == nil)
-		return -1;
+		goto out;
 	winclamp(e, nw);
 
 	parent = nil;
 	isleft = 0;
 	leaf = findleaf(e->layout, e->curwin, &parent, &isleft);
-	if (leaf == nil) {
-		free(nw);
-		return -1;
-	}
+	if (leaf == nil)
+		goto out;
 
 	a = nodeleaf(e->curwin);
 	b = nodeleaf(nw);
-	if (a == nil || b == nil) {
-		if (a) free(a);
-		if (b) nodefree(b);
-		return -1;
-	}
+	if (a == nil || b == nil)
+		goto out;
 	split = nodesplit(vertical ? 2 : 1, a, b);
-	if (split == nil) {
-		free(a);
-		nodefree(b);
-		return -1;
-	}
+	if (split == nil)
+		goto out;
 
 	/* Replace the leaf node with the new split node. */
 	if (parent == nil) {
@@ -2948,7 +2920,25 @@ splitcur(Eek *e, int vertical)
 	/* Switch focus to the newly created window. */
 	e->curwin = nw;
 	winload(e, e->curwin);
-	return 0;
+	rc = 0;
+
+	/* Ownership transferred to the layout tree. */
+	nw = nil;
+	a = nil;
+	b = nil;
+	split = nil;
+
+	out:
+	/* Free only what we allocated and did not link into the tree. */
+	if (split != nil)
+		free(split);
+	if (a != nil)
+		free(a);
+	if (b != nil)
+		nodefree(b);
+	else if (nw != nil)
+		free(nw);
+	return rc;
 }
 
 static int
@@ -3341,9 +3331,18 @@ overlap1d(int a0, int a1, int b0, int b1)
 {
 	int lo;
 	int hi;
+	int t;
 
-	if (a0 > a1) { int t = a0; a0 = a1; a1 = t; }
-	if (b0 > b1) { int t = b0; b0 = b1; b1 = t; }
+	if (a0 > a1) {
+		t = a0;
+		a0 = a1;
+		a1 = t;
+	}
+	if (b0 > b1) {
+		t = b0;
+		b0 = b1;
+		b1 = t;
+	}
 	lo = a0 > b0 ? a0 : b0;
 	hi = a1 < b1 ? a1 : b1;
 	if (hi <= lo)
@@ -3356,6 +3355,7 @@ focusdir(Eek *e, int dir)
 {
 	Rect root;
 	Rect cur;
+	Rect r;
 	long textrows;
 	long n;
 	Win **arr;
@@ -3364,6 +3364,11 @@ focusdir(Eek *e, int dir)
 	long bestdist;
 	int bestov;
 	int pass;
+	long dist;
+	int ov;
+	int ok;
+	int cx0, cx1, cy0, cy1;
+	int rx0, rx1, ry0, ry1;
 
 	if (e == nil || e->layout == nil || e->curwin == nil)
 		return -1;
@@ -3393,13 +3398,6 @@ focusdir(Eek *e, int dir)
 		best = nil;
 		bestov = -1;
 		for (n = 0; n < i; n++) {
-			Rect r;
-			long dist;
-			int ov;
-			int ok;
-			int cx0, cx1, cy0, cy1;
-			int rx0, rx1, ry0, ry1;
-
 			if (arr[n] == e->curwin)
 				continue;
 			r = root;
@@ -3489,12 +3487,11 @@ drawstatus(Eek *e)
 {
 	char buf[256];
 	char tbuf[64];
+	char pfx;
 	int n;
 	const char *m;
 
 	if (e->mode == Modecmd) {
-		char pfx;
-
 		pfx = e->cmdprefix ? e->cmdprefix : ':';
 		n = snprintf(buf, sizeof buf, "%c%.*s", pfx, (int)e->cmdn, e->cmd);
 	} else {
@@ -3513,7 +3510,7 @@ drawstatus(Eek *e)
 		n = 0;
 	termwrite(&e->t, "\x1b[7m", 4);
 	termwrite(&e->t, buf, n);
-	while (n++ < e->t.col)
+	for (; n < e->t.col; n++)
 		termwrite(&e->t, " ", 1);
 	termwrite(&e->t, "\x1b[m", 3);
 }
@@ -3595,6 +3592,7 @@ searchforward(Eek *e, const char *pat)
 	Line *l;
 	long nline;
 	long ln;
+	long lim;
 
 	if (e == nil || pat == nil)
 		return -1;
@@ -3626,8 +3624,6 @@ searchforward(Eek *e, const char *pat)
 
 	/* wrapscan: continue at top */
 	for (y = 0; y <= e->cy && y < nline; y++) {
-		long lim;
-
 		l = bufgetline(&e->b, y);
 		if (l == nil)
 			continue;
@@ -3676,6 +3672,7 @@ searchbackward(Eek *e, const char *pat)
 	long patn;
 	Line *l;
 	long ln;
+	long lim;
 
 	if (e == nil || pat == nil)
 		return -1;
@@ -3713,8 +3710,6 @@ searchbackward(Eek *e, const char *pat)
 
 	/* wrapscan: continue at bottom */
 	for (y = lsz(e->b.nline) - 1; y >= e->cy && y >= 0; y--) {
-		long lim;
-
 		l = bufgetline(&e->b, y);
 		if (l == nil)
 			continue;
@@ -3815,32 +3810,38 @@ readfileinsert(Eek *e, const char *path, long at)
 	ssize_t n;
 	long nins;
 	long pos;
+	long rc;
+
+	rc = -1;
+	fp = nil;
+	line = nil;
+	cap = 0;
 
 	if (e == nil || path == nil || *path == 0)
 		return -1;
 
 	fp = fopen(path, "r");
 	if (fp == nil)
-		return -1;
+		goto out;
 
-	line = nil;
-	cap = 0;
 	nins = 0;
 	pos = at;
-	while ((n = getline(&line, &cap, fp)) >= 0) {
-		while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'))
-			n--;
+	for (; (n = getline(&line, &cap, fp)) >= 0; ) {
+		for (; n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'); n--)
+			;
 		if (bufinsertline(&e->b, pos, line, (long)n) < 0) {
-			free(line);
-			(void)fclose(fp);
-			return -1;
+			goto out;
 		}
 		pos++;
 		nins++;
 	}
+	rc = nins;
+
+	out:
 	free(line);
-	(void)fclose(fp);
-	return nins;
+	if (fp != nil)
+		(void)fclose(fp);
+	return rc;
 }
 
 /*
@@ -3861,6 +3862,17 @@ runinsert(Eek *e, const char *cmd)
 	Line *l;
 	char *tail;
 	long tailn;
+	long ln;
+	long rc;
+
+	rc = -1;
+	fp = nil;
+	line = nil;
+	cap = 0;
+	nins = 0;
+	l = nil;
+	tail = nil;
+	tailn = 0;
 
 	if (e == nil || cmd == nil || *cmd == 0)
 		return -1;
@@ -3877,30 +3889,23 @@ runinsert(Eek *e, const char *cmd)
 	if (fp == nil)
 		return -1;
 
-	line = nil;
-	cap = 0;
 	/* Peek first line; if there's no output, do nothing. */
 	n = getline(&line, &cap, fp);
 	if (n < 0) {
-		free(line);
-		(void)pclose(fp);
-		return 0;
+		rc = 0;
+		goto out;
 	}
 
 	/* Strip newline(s). */
-	while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'))
-		n--;
+	for (; n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'); n--)
+		;
 
 	/* Save and remove the tail to the right of the cursor. */
 	l = bufgetline(&e->b, e->cy);
 	if (l == nil) {
-		free(line);
-		(void)pclose(fp);
-		return -1;
+		goto out;
 	}
 	{
-		long ln;
-
 		ln = lsz(l->n);
 		if (e->cx > ln)
 			e->cx = ln;
@@ -3910,55 +3915,36 @@ runinsert(Eek *e, const char *cmd)
 	if (tailn > 0) {
 		tail = malloc((size_t)tailn);
 		if (tail == nil) {
-			free(line);
-			(void)pclose(fp);
-			return -1;
+			goto out;
 		}
 		memcpy(tail, l->s + e->cx, (size_t)tailn);
 		if (linedelrange(l, e->cx, (size_t)tailn) < 0) {
-			free(tail);
-			free(line);
-			(void)pclose(fp);
-			return -1;
+			goto out;
 		}
 	}
-
-	nins = 0;
 	/* Insert first stdout line into the current line at the cursor. */
 	if (n > 0) {
 		if (lineinsert(l, e->cx, line, (long)n) < 0) {
-			free(tail);
-			free(line);
-			(void)pclose(fp);
-			return -1;
+			goto out;
 		}
 		e->cx += (long)n;
 	}
 	nins++;
 
 	/* Insert remaining stdout lines as new buffer lines. */
-	while ((n = getline(&line, &cap, fp)) >= 0) {
-		while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'))
-			n--;
+	for (; (n = getline(&line, &cap, fp)) >= 0; ) {
+		for (; n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'); n--)
+			;
 		if (insertnl(e) < 0) {
-			free(tail);
-			free(line);
-			(void)pclose(fp);
-			return -1;
+			goto out;
 		}
 		l = bufgetline(&e->b, e->cy);
 		if (l == nil) {
-			free(tail);
-			free(line);
-			(void)pclose(fp);
-			return -1;
+			goto out;
 		}
 		if (n > 0) {
 			if (lineinsert(l, 0, line, (long)n) < 0) {
-				free(tail);
-				free(line);
-				(void)pclose(fp);
-				return -1;
+				goto out;
 			}
 			e->cx = (long)n;
 		} else {
@@ -3966,27 +3952,32 @@ runinsert(Eek *e, const char *cmd)
 		}
 		nins++;
 	}
-
-	free(line);
 	(void)pclose(fp);
+	fp = nil;
 
 	/* Re-attach original tail to the end of the last inserted line. */
 	if (tailn > 0 && tail != nil) {
 		l = bufgetline(&e->b, e->cy);
 		if (l == nil) {
-			free(tail);
-			return -1;
+			goto out;
 		}
 		if (lineinsert(l, e->cx, tail, tailn) < 0) {
-			free(tail);
-			return -1;
+			goto out;
 		}
 		/* Keep cursor before the tail (after inserted stdout). */
 		free(tail);
+		tail = nil;
 	}
 
 	e->dirty = 1;
-	return nins;
+	rc = nins;
+
+	out:
+	free(tail);
+	free(line);
+	if (fp != nil)
+		(void)pclose(fp);
+	return rc;
 }
 
 /*
@@ -4046,23 +4037,43 @@ cmdexec(Eek *e)
 	int force;
 	char *end;
 	unsigned mapmodes;
+	char *s;
+	char *tok;
+	char *lhs;
+	char *rhs;
+	Win **arr;
+	const char *name;
+	char mark;
+	char out[256];
+	long adv;
+	long r;
+	long n;
+	long idx;
+	long to;
+	long i;
+	long ndirty;
+	long nins;
+	long at;
+	int changed;
+	int exists;
+	int w;
 
 	memset(cmd, 0, sizeof cmd);
 	memcpy(cmd, e->cmd, (size_t)e->cmdn);
 	cmd[e->cmdn] = 0;
 
 	p = cmd;
-	while (*p == ' ' || *p == '\t')
-		p++;
+	for (; *p == ' ' || *p == '\t'; p++)
+		;
 	if (subexec(e, p))
 		return 0;
 	arg = p;
-	while (*arg && *arg != ' ' && *arg != '\t')
-		arg++;
+	for (; *arg && *arg != ' ' && *arg != '\t'; arg++)
+		;
 	if (*arg) {
 		*arg++ = 0;
-		while (*arg == ' ' || *arg == '\t')
-			arg++;
+	for (; *arg == ' ' || *arg == '\t'; arg++)
+			;
 	}
 
 	force = 0;
@@ -4074,10 +4085,6 @@ cmdexec(Eek *e)
 	mapmodes = (1u << Modenormal) | (1u << Modevisual);
 
 	if (strcmp(p, "set") == 0 || strcmp(p, "se") == 0) {
-		char *s;
-		char *tok;
-		int changed;
-
 		if (arg == nil || *arg == 0) {
 			setmsg(e, "%s %s", e->linenumbers ? "numbers" : "nonumbers",
 				e->relativenumbers ? "relativenumbers" : "norelativenumbers");
@@ -4087,13 +4094,13 @@ cmdexec(Eek *e)
 		changed = 0;
 		s = arg;
 		for (;;) {
-			while (*s == ' ' || *s == '\t')
-				s++;
+			for (; *s == ' ' || *s == '\t'; s++)
+				;
 			if (*s == 0)
 				break;
 			tok = s;
-			while (*s && *s != ' ' && *s != '\t')
-				s++;
+			for (; *s && *s != ' ' && *s != '\t'; s++)
+				;
 			if (*s)
 				*s++ = 0;
 			if (setopt(e, tok) < 0)
@@ -4107,27 +4114,20 @@ cmdexec(Eek *e)
 	}
 
 	if (strcmp(p, "map") == 0) {
-		char *s;
-		char *lhs;
-		char *rhs;
-		long adv;
-		long r;
-		long n;
-
 		if (arg == nil || *arg == 0) {
 			setmsg(e, "Usage: map <lhs> <rhs>");
 			return -1;
 		}
 		s = arg;
-		while (*s == ' ' || *s == '\t')
-			s++;
+		for (; *s == ' ' || *s == '\t'; s++)
+			;
 		lhs = s;
-		while (*s && *s != ' ' && *s != '\t')
-			s++;
+		for (; *s && *s != ' ' && *s != '\t'; s++)
+			;
 		if (*s)
 			*s++ = 0;
-		while (*s == ' ' || *s == '\t')
-			s++;
+		for (; *s == ' ' || *s == '\t'; s++)
+			;
 		rhs = s;
 		if (lhs == nil || *lhs == 0 || rhs == nil || *rhs == 0) {
 			setmsg(e, "Usage: map <lhs> <rhs>");
@@ -4148,22 +4148,16 @@ cmdexec(Eek *e)
 	}
 
 	if (strcmp(p, "unmap") == 0) {
-		char *s;
-		char *lhs;
-		long adv;
-		long r;
-		long n;
-
 		if (arg == nil || *arg == 0) {
 			setmsg(e, "Usage: unmap <lhs>");
 			return -1;
 		}
 		s = arg;
-		while (*s == ' ' || *s == '\t')
-			s++;
+		for (; *s == ' ' || *s == '\t'; s++)
+			;
 		lhs = s;
-		while (*s && *s != ' ' && *s != '\t')
-			s++;
+		for (; *s && *s != ' ' && *s != '\t'; s++)
+			;
 		*s = 0;
 		if (lhs == nil || *lhs == 0) {
 			setmsg(e, "Usage: unmap <lhs>");
@@ -4264,8 +4258,6 @@ cmdexec(Eek *e)
 		return 0;
 	}
 	if (strcmp(p, "tabn") == 0 || strcmp(p, "tabnext") == 0) {
-		long idx;
-
 		if (e->ntab <= 1) {
 			setmsg(e, "Only one tab");
 			return 0;
@@ -4293,8 +4285,6 @@ cmdexec(Eek *e)
 		return 0;
 	}
 	if (strcmp(p, "tabp") == 0 || strcmp(p, "tabprevious") == 0) {
-		long idx;
-
 		if (e->ntab <= 1) {
 			setmsg(e, "Only one tab");
 			return 0;
@@ -4351,8 +4341,6 @@ cmdexec(Eek *e)
 		return 0;
 	}
 	if (strcmp(p, "tabm") == 0 || strcmp(p, "tabmove") == 0) {
-		long to;
-
 		if (arg == nil || *arg == 0) {
 			setmsg(e, "No tab index");
 			return -1;
@@ -4371,17 +4359,9 @@ cmdexec(Eek *e)
 		return 0;
 	}
 	if (strcmp(p, "tabs") == 0) {
-		char out[256];
-		long i;
-		long n;
-
 		memset(out, 0, sizeof out);
 		n = 0;
 		for (i = 0; i < e->ntab; i++) {
-			const char *name;
-			char mark;
-			int w;
-
 			mark = (i == e->curtab) ? '*' : ' ';
 			if (i == e->curtab)
 				name = (e->fname && e->fname[0]) ? e->fname : "[No Name]";
@@ -4422,11 +4402,6 @@ cmdexec(Eek *e)
 	}
 
 	if (strcmp(p, "e") == 0 || strcmp(p, "edit") == 0) {
-		int exists;
-		long n;
-		Win **arr;
-		long i;
-
 		if (arg == nil || *arg == 0) {
 			setmsg(e, "No file name");
 			return -1;
@@ -4486,7 +4461,7 @@ cmdexec(Eek *e)
 		if (arr != nil) {
 			i = 0;
 			collectwins(e->layout, arr, &i);
-			while (i-- > 0) {
+			for (; i-- > 0; ) {
 				arr[i]->cx = 0;
 				arr[i]->cy = 0;
 				arr[i]->rowoff = 0;
@@ -4517,8 +4492,6 @@ cmdexec(Eek *e)
 		return 0;
 	}
 	if (strcmp(p, "tabp") == 0 || strcmp(p, "tabprevious") == 0) {
-		long idx;
-
 		if (e->ntab <= 1) {
 			setmsg(e, "Only one tab");
 			return 0;
@@ -4565,8 +4538,6 @@ cmdexec(Eek *e)
 		return 0;
 	}
 	if (strcmp(p, "tabm") == 0 || strcmp(p, "tabmove") == 0) {
-		long n;
-
 		if (arg == nil || *arg == 0) {
 			setmsg(e, "tabmove: missing index");
 			return -1;
@@ -4579,9 +4550,6 @@ cmdexec(Eek *e)
 		return 0;
 	}
 	if (strcmp(p, "tabonly") == 0 || strcmp(p, "tabo") == 0) {
-		long i;
-		long ndirty;
-
 		if (e->ntab <= 1)
 			return 0;
 		ndirty = 0;
@@ -4611,9 +4579,6 @@ cmdexec(Eek *e)
 	}
 
 	if (strcmp(p, "r") == 0 || strcmp(p, "read") == 0) {
-		long nins;
-		long at;
-
 		if (arg == nil || *arg == 0) {
 			setmsg(e, "No file name");
 			return -1;
@@ -4634,8 +4599,6 @@ cmdexec(Eek *e)
 	}
 
 	if (strcmp(p, "run") == 0) {
-		long nins;
-
 		if (arg == nil || *arg == 0) {
 			setmsg(e, "run: missing command");
 			return -1;
@@ -4678,12 +4641,36 @@ draw(Eek *e)
 	long coloff;
 	long ni;
 	long n;
+	long ln;
 	int gutter;
 	int numw;
+	int nn;
 	char nbuf[64];
 	Rect root;
 	Rect cur;
+	Rect rr;
+	Rect ra, rb;
 	long textrows;
+	Node *stack[256];
+	Rect rstack[256];
+	int sp;
+	Node *nd;
+	int sep;
+	int aW, bW;
+	int aH, bH;
+	int curinv;
+	int collim;
+	long gnum;
+	int wantinv;
+	long nsp;
+	int winv;
+	long txcur;
+	int yy;
+	int xx;
+	long cyrel;
+	long cxcol;
+	int cxabs;
+	int cyabs;
 
 	if (e == nil)
 		return;
@@ -4702,22 +4689,11 @@ draw(Eek *e)
 
 	/* Draw layout recursively. */
 	{
-		Node *stack[256];
-		Rect rstack[256];
-		int sp;
-
 		sp = 0;
 		stack[sp] = e->layout;
 		rstack[sp] = root;
 		sp++;
-		while (sp-- > 0) {
-			Node *nd;
-			Rect rr;
-			int sep;
-			int aW, bW;
-			int aH, bH;
-			Rect ra, rb;
-
+		for (; sp-- > 0; ) {
 			nd = stack[sp];
 			rr = rstack[sp];
 			if (nd == nil)
@@ -4728,10 +4704,6 @@ draw(Eek *e)
 				gutter = gutterwidth(e, rr.w);
 				numw = gutter ? gutter - 1 : 0;
 				for (y = 0; y < rr.h; y++) {
-					int curinv;
-					long ln;
-					int collim;
-
 					filerow = e->rowoff + y;
 					termmoveto(&e->t, rr.y + (int)y, rr.x);
 					collim = rr.w;
@@ -4741,14 +4713,11 @@ draw(Eek *e)
 							termwrite(&e->t, "~", 1);
 							rx = 1;
 						}
-						while (rx++ < collim)
+						for (; rx < collim; rx++)
 							termwrite(&e->t, " ", 1);
 						continue;
 					}
 					if (gutter && collim > 0) {
-						long gnum;
-						int nn;
-
 						gnum = 0;
 						if (e->relativenumbers) {
 							if (filerow == e->cy)
@@ -4768,7 +4737,7 @@ draw(Eek *e)
 					}
 					l = bufgetline(&e->b, filerow);
 					if (l == nil || l->n == 0) {
-						while (rx++ < collim)
+						for (; rx < collim; rx++)
 							termwrite(&e->t, " ", 1);
 						continue;
 					}
@@ -4784,8 +4753,6 @@ draw(Eek *e)
 					rx = gutter;
 					tx = 0;
 					for (i = 0; i < ln && rx < collim; ) {
-						int wantinv;
-
 						wantinv = 0;
 						if (e->vmode == Visualblock)
 							wantinv = invselblock(e, filerow, tx);
@@ -4797,14 +4764,10 @@ draw(Eek *e)
 						}
 
 						if (ls[i] == '\t') {
-							long nsp;
-
 							nsp = TABSTOP - (tx % TABSTOP);
-							while (nsp-- > 0 && rx < collim) {
+							for (; nsp > 0 && rx < collim; nsp--) {
 								if (tx >= coloff && rx < collim) {
 									if (e->vmode == Visualblock) {
-										int winv;
-
 										winv = invselblock(e, filerow, tx);
 										if (winv != curinv) {
 											drawattrs(e, winv);
@@ -4833,11 +4796,8 @@ draw(Eek *e)
 						i += n;
 					}
 					if (e->vmode == Visualblock) {
-						int winv;
-						long txcur;
-
 						/* Trailing fill: spaces are real columns in block selection. */
-						while (rx < collim) {
+						for (; rx < collim; rx++) {
 							txcur = coloff + (rx - gutter);
 							winv = invselblock(e, filerow, txcur);
 							if (winv != curinv) {
@@ -4845,14 +4805,13 @@ draw(Eek *e)
 								curinv = winv;
 							}
 							termwrite(&e->t, " ", 1);
-							rx++;
 						}
 						if (curinv)
 							termwrite(&e->t, "\x1b[m", 3);
 					} else {
 						if (curinv)
 							termwrite(&e->t, "\x1b[m", 3);
-						while (rx++ < collim)
+						for (; rx < collim; rx++)
 							termwrite(&e->t, " ", 1);
 					}
 				}
@@ -4873,7 +4832,6 @@ draw(Eek *e)
 				ra = (Rect){ rr.x, rr.y, aW, rr.h };
 				rb = (Rect){ rr.x + aW + sep, rr.y, bW, rr.h };
 				if (sep) {
-					int yy;
 					for (yy = 0; yy < rr.h; yy++) {
 						termmoveto(&e->t, rr.y + yy, rr.x + aW);
 						termwrite(&e->t, "|", 1);
@@ -4887,7 +4845,6 @@ draw(Eek *e)
 				ra = (Rect){ rr.x, rr.y, rr.w, aH };
 				rb = (Rect){ rr.x, rr.y + aH + sep, rr.w, bH };
 				if (sep) {
-					int xx;
 					termmoveto(&e->t, rr.y + aH, rr.x);
 					for (xx = 0; xx < rr.w; xx++)
 						termwrite(&e->t, "-", 1);
@@ -4916,11 +4873,6 @@ draw(Eek *e)
 
 	cur = root;
 	if (findrect(e->layout, e->curwin, root, &cur)) {
-		long cyrel;
-		long cxcol;
-		int cxabs;
-		int cyabs;
-
 		gutter = gutterwidth(e, cur.w);
 		cyrel = e->cy - e->rowoff;
 		if (cyrel < 0)
@@ -5835,6 +5787,10 @@ searchword(Eek *e, Args *a)
 	long n;
 	long i;
 	long ln;
+	long px;
+	long pr;
+	long nr;
+	long nx;
 
 	(void)a;
 	if (e == nil)
@@ -5863,9 +5819,6 @@ searchword(Eek *e, Args *a)
 
 	x0 = pos;
 	for (;;) {
-		long px;
-		long pr;
-
 		px = prevutf8(e, e->cy, x0);
 		if (px >= x0)
 			break;
@@ -5882,9 +5835,6 @@ searchword(Eek *e, Args *a)
 
 	x1 = nextutf8(e, e->cy, pos);
 	for (;;) {
-		long nr;
-		long nx;
-
 		if (x1 >= ln)
 			break;
 		nr = utf8dec1(l->s + x1, (size_t)(ln - x1), &adv);
@@ -6169,6 +6119,8 @@ static int
 chgend(Eek *e, Args *a)
 {
 	Line *l;
+	Line *nl;
+	char nlsep;
 	long len;
 	long nlines;
 	long i;
@@ -6189,9 +6141,6 @@ chgend(Eek *e, Args *a)
 			(void)linedelrange(l, e->cx, len - e->cx);
 	}
 	for (i = 1; i < nlines; i++) {
-		Line *nl;
-		char nlsep;
-
 		nl = bufgetline(&e->b, e->cy + 1);
 		if (nl == nil)
 			break;
@@ -6646,6 +6595,26 @@ nvkey(Eek *e, const Key *k)
 {
 	Args a;
 	long r;
+	long rr;
+	long n;
+	long idx;
+	long line;
+	long total;
+	long sy, sx;
+	long ey, ex;
+	long ty, tx;
+	long cy, cx;
+	long len;
+	long i;
+	long y0, y1;
+	long rx0, rx1;
+	long mode;
+	long op;
+	long origcx;
+	long pos;
+	long posend;
+	long curend;
+	long x0, x1;
 	int did;
 	int dir;
 	int handled;
@@ -6712,9 +6681,6 @@ nvkey(Eek *e, const Key *k)
 	if (e->rpending) {
 		e->rpending = 0;
 		if (k->kind == Keyrune) {
-			long rr;
-			long n;
-
 			rr = k->value;
 			n = e->rcount;
 			e->rcount = 0;
@@ -6739,15 +6705,6 @@ nvkey(Eek *e, const Key *k)
 	if (e->fpending) {
 		e->fpending = 0;
 		if (k->kind == Keyrune) {
-			long n;
-			long mode;
-			long op;
-			long origcx;
-			long pos;
-			long posend;
-			long curend;
-			long x0, x1;
-
 			n = e->fcount;
 			mode = e->fmode;
 			op = e->fop;
@@ -6861,8 +6818,6 @@ nvkey(Eek *e, const Key *k)
 
 		e->dpending = 0;
 		if (k->kind == Keyrune) {
-			long total;
-
 			total = countval(e->opcount) * countval(e->count);
 			e->opcount = 0;
 			e->count = 0;
@@ -6926,10 +6881,6 @@ nvkey(Eek *e, const Key *k)
 
 		e->ypending = 0;
 		if (k->kind == Keyrune) {
-			long total;
-			long sy, sx;
-			long ty, tx;
-
 			total = countval(e->opcount) * countval(e->count);
 			e->opcount = 0;
 			e->count = 0;
@@ -6942,9 +6893,6 @@ nvkey(Eek *e, const Key *k)
 				break;
 			case 'w':
 				{
-					long i;
-					long cy, cx;
-
 					cy = sy;
 					cx = sx;
 					for (i = 0; i < total; i++) {
@@ -6966,8 +6914,6 @@ nvkey(Eek *e, const Key *k)
 				(void)yankrange(e, e->cy, e->cx, e->cy, tx);
 				break;
 			case '$': {
-				long len;
-
 				len = linelen(e, e->cy);
 				(void)yankrange(e, e->cy, e->cx, e->cy, len);
 				break;
@@ -7004,8 +6950,6 @@ nvkey(Eek *e, const Key *k)
 
 		e->cpending = 0;
 		if (k->kind == Keyrune) {
-			long total;
-
 			total = countval(e->opcount) * countval(e->count);
 			e->opcount = 0;
 			e->count = 0;
@@ -7098,8 +7042,6 @@ nvkey(Eek *e, const Key *k)
 	/* VISUAL extra keys: v, yi{obj}, di{obj} etc. */
 	if (e->mode == Modevisual) {
 		if (e->vmode == Visualblock && k->value == 'I') {
-			long y0, y1, rx0, rx1;
-
 			vselblockbounds(e, &y0, &y1, &rx0, &rx1);
 			e->blockins = 1;
 			e->blocky0 = y0;
@@ -7134,8 +7076,6 @@ nvkey(Eek *e, const Key *k)
 		}
 		if (k->value == 'p' || k->value == 'P') {
 			if (e->vmode != Visualblock) {
-				long sy, sx, ey, ex;
-
 				vselbounds(e, &sy, &sx, &ey, &ex);
 				(void)delrange(e, sy, sx, ey, ex, 0);
 				setmode(e, Modenormal);
@@ -7148,13 +7088,9 @@ nvkey(Eek *e, const Key *k)
 		}
 		if (k->value == 'y') {
 			if (e->vmode == Visualblock) {
-				long y0, y1, rx0, rx1;
-
 				vselblockbounds(e, &y0, &y1, &rx0, &rx1);
 				(void)yankblock(e, y0, y1, rx0, rx1);
 			} else {
-				long sy, sx, ey, ex;
-
 				vselbounds(e, &sy, &sx, &ey, &ex);
 				(void)yankrange(e, sy, sx, ey, ex);
 			}
@@ -7166,13 +7102,9 @@ nvkey(Eek *e, const Key *k)
 		}
 		if (k->value == 'd' || k->value == 'D') {
 			if (e->vmode == Visualblock) {
-				long y0, y1, rx0, rx1;
-
 				vselblockbounds(e, &y0, &y1, &rx0, &rx1);
 				(void)delblock(e, y0, y1, rx0, rx1, 1);
 			} else {
-				long sy, sx, ey, ex;
-
 				vselbounds(e, &sy, &sx, &ey, &ex);
 				(void)delrange(e, sy, sx, ey, ex, 1);
 			}
@@ -7184,13 +7116,9 @@ nvkey(Eek *e, const Key *k)
 		}
 		if (k->value == 'c' || k->value == 'C' || k->value == 's' || k->value == 'S') {
 			if (e->vmode == Visualblock) {
-				long y0, y1, rx0, rx1;
-
 				vselblockbounds(e, &y0, &y1, &rx0, &rx1);
 				(void)delblock(e, y0, y1, rx0, rx1, 1);
 			} else {
-				long sy, sx, ey, ex;
-
 				vselbounds(e, &sy, &sx, &ey, &ex);
 				(void)delrange(e, sy, sx, ey, ex, 1);
 			}
@@ -7214,8 +7142,6 @@ nvkey(Eek *e, const Key *k)
 
 	/* Multi-key sequences handled before table dispatch (gg, gt/gT, leader). */
 	if (e->lastnormalrune == 'g' && k->value == 'g') {
-		long line;
-
 		line = e->seqcount > 0 ? e->seqcount - 1 : 0;
 		e->cy = clamp(line, 0, e->b.nline - 1);
 		e->cx = 0;
@@ -7227,8 +7153,6 @@ nvkey(Eek *e, const Key *k)
 		return 1;
 	}
 	if (e->lastnormalrune == 'g' && (k->value == 't' || k->value == 'T')) {
-		long idx;
-
 		if (e->ntab <= 1) {
 			setmsg(e, "Only one tab");
 			e->lastnormalrune = 0;
@@ -7261,8 +7185,6 @@ nvkey(Eek *e, const Key *k)
 		return 1;
 	}
 	if (e->mode == Modenormal && e->lastnormalrune == ' ' && (k->value == 'n' || k->value == 'h' || k->value == 'j' || k->value == 'k' || k->value == 'l')) {
-		long idx;
-
 		idx = e->curtab;
 		if (k->value == 'n') {
 			if (tabnew(e, nil) < 0)
@@ -7334,6 +7256,12 @@ main(int argc, char **argv)
 {
 	Eek e;
 	KeyEvent kev;
+	Rect root;
+	Rect cur;
+	long textrows;
+	int gut;
+	long textcols;
+	long i;
 
 	memset(&e, 0, sizeof e);
 	bufinit(&e.b);
@@ -7365,28 +7293,17 @@ main(int argc, char **argv)
 			normalfixcursor(&e);
 		}
 		/* Scroll the active window based on its viewport height. */
-		{
-			Rect root;
-			Rect cur;
-			long textrows;
-
-			textrows = e.t.row - 1;
-			if (textrows < 1)
-				textrows = 1;
-			root = (Rect){ 0, 0, e.t.col, (int)textrows };
+		textrows = e.t.row - 1;
+		if (textrows < 1)
+			textrows = 1;
+		root = (Rect){ 0, 0, e.t.col, (int)textrows };
+		cur = root;
+		if (!findrect(e.layout, e.curwin, root, &cur))
 			cur = root;
-			if (!findrect(e.layout, e.curwin, root, &cur))
-				cur = root;
-			scroll(&e, cur.h);
-			{
-				int gut;
-				long textcols;
-
-				gut = gutterwidth(&e, cur.w);
-				textcols = cur.w - gut;
-				hscroll(&e, textcols);
-			}
-		}
+		scroll(&e, cur.h);
+		gut = gutterwidth(&e, cur.w);
+		textcols = cur.w - gut;
+		hscroll(&e, textcols);
 		winstore(&e);
 		winload(&e, e.curwin);
 		draw(&e);
@@ -7445,7 +7362,6 @@ main(int argc, char **argv)
 
 	/* Free inactive tabs (the active tab lives in e.* fields). */
 	if (e.tab != nil) {
-		long i;
 		for (i = 0; i < e.ntab; i++) {
 			if (i == e.curtab)
 				continue;
@@ -7499,6 +7415,7 @@ undopush(Eek *e)
 {
 	Undo *p;
 	Undo *u;
+	long ncap;
 	enum { Undomax = 128 };
 
 	if (e == nil)
@@ -7515,8 +7432,6 @@ undopush(Eek *e)
 	}
 
 	if (e->nundo + 1 > e->capundo) {
-		long ncap;
-
 		ncap = e->capundo > 0 ? e->capundo * 2 : 32;
 		p = realloc(e->undo, (size_t)ncap * sizeof e->undo[0]);
 		if (p == nil)

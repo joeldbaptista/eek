@@ -87,10 +87,9 @@ termbufensure(Term *t, long need)
 	if (need <= t->outcap)
 		return;
 	cap = t->outcap > 0 ? t->outcap : 4096;
-	while (cap < need) {
+	for (; cap < need; cap *= 2) {
 		if (cap > (1L << 26))
 			break;
-		cap *= 2;
 	}
 	p = realloc(t->out, (size_t)cap);
 	if (p == nil)
@@ -123,14 +122,14 @@ void
 termrepeat(Term *t, char c, int n)
 {
 	char buf[64];
+	int chunk;
 	int i;
 
 	if (n <= 0)
 		return;
 	for (i = 0; i < (int)sizeof buf; i++)
 		buf[i] = c;
-	while (n > 0) {
-		int chunk;
+	for (; n > 0; ) {
 		chunk = n > (int)sizeof buf ? (int)sizeof buf : n;
 		termwrite(t, buf, chunk);
 		n -= chunk;
@@ -231,6 +230,7 @@ void
 termflush(Term *t)
 {
 	long off;
+	ssize_t w;
 
 	if (t == nil)
 		return;
@@ -239,8 +239,7 @@ termflush(Term *t)
 		return;
 	}
 	off = 0;
-	while (off < t->outn) {
-		ssize_t w;
+	for (; off < t->outn; ) {
 		w = write(t->fdout, t->out + off, (size_t)(t->outn - off));
 		if (w <= 0)
 			break;
