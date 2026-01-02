@@ -4190,6 +4190,10 @@ cmdexec(Eek *e)
 	}
 
 	if (strcmp(p, "q") == 0) {
+		if (e->dirty && !force) {
+			setmsg(e, "No write since last change (add !)");
+			return -1;
+		}
 		if (nwins(e->layout) > 1) {
 			if (closecur(e) < 0) {
 				setmsg(e, "Cannot close window");
@@ -4206,10 +4210,6 @@ cmdexec(Eek *e)
 				return -1;
 			}
 			return 0;
-		}
-		if (e->dirty && !force) {
-			setmsg(e, "No write since last change (add !)");
-			return -1;
 		}
 		e->quit = 1;
 		return 0;
