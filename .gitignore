@@ -2,6 +2,7 @@
 *.o
 eek
 docs/*
+sandbox/*
 
 # local config
 config.h
