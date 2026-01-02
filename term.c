@@ -129,10 +129,9 @@ termrepeat(Term *t, char c, int n)
 		return;
 	for (i = 0; i < (int)sizeof buf; i++)
 		buf[i] = c;
-	for (; n > 0; ) {
+	for (; n > 0; n -= chunk) {
 		chunk = n > (int)sizeof buf ? (int)sizeof buf : n;
 		termwrite(t, buf, chunk);
-		n -= chunk;
 	}
 }
 
@@ -238,8 +237,7 @@ termflush(Term *t)
 		t->outn = 0;
 		return;
 	}
-	off = 0;
-	for (; off < t->outn; ) {
+	for (off = 0; off < t->outn; ) {
 		w = write(t->fdout, t->out + off, (size_t)(t->outn - off));
 		if (w <= 0)
 			break;
