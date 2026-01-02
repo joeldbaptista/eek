@@ -1,3 +1,6 @@
+#ifndef EEK_H
+#define EEK_H
+
 typedef unsigned int uint;
 
 typedef struct Term Term;
@@ -134,3 +137,5 @@ void termflush(Term *t);
  *  - -1 on EOF.
  */
 int keyread(Term *t, Key *k);
+
+#endif /* EEK_H */
