@@ -3597,6 +3597,7 @@ searchforward(Eek *e, const char *pat)
 	long startx;
 	long patn;
 	Line *l;
+	const char *ls;
 	long nline;
 	long ln;
 	long lim;
@@ -3614,6 +3615,7 @@ searchforward(Eek *e, const char *pat)
 		l = bufgetline(&e->b, y);
 		if (l == nil)
 			continue;
+		ls = linebytes(l);
 		ln = lsz(l->n);
 		x = (y == e->cy) ? startx : 0;
 		if (x < 0)
@@ -3621,7 +3623,7 @@ searchforward(Eek *e, const char *pat)
 		if (x > ln)
 			x = ln;
 		for (; x + patn <= ln; x++) {
-			if (memcmp(l->s + x, pat, (size_t)patn) == 0) {
+			if (memcmp(ls + x, pat, (size_t)patn) == 0) {
 				e->cy = y;
 				e->cx = x;
 				return 0;
@@ -3634,6 +3636,7 @@ searchforward(Eek *e, const char *pat)
 		l = bufgetline(&e->b, y);
 		if (l == nil)
 			continue;
+		ls = linebytes(l);
 		x = 0;
 		lim = lsz(l->n);
 		if (y == e->cy) {
@@ -3646,7 +3649,7 @@ searchforward(Eek *e, const char *pat)
 		if (lim < patn)
 			continue;
 		for (; x + patn <= lim; x++) {
-			if (memcmp(l->s + x, pat, (size_t)patn) == 0) {
+			if (memcmp(ls + x, pat, (size_t)patn) == 0) {
 				e->cy = y;
 				e->cx = x;
 				return 0;
@@ -3678,6 +3681,7 @@ searchbackward(Eek *e, const char *pat)
 	long startx;
 	long patn;
 	Line *l;
+	const char *ls;
 	long ln;
 	long lim;
 
@@ -3691,23 +3695,19 @@ searchbackward(Eek *e, const char *pat)
 		l = bufgetline(&e->b, y);
 		if (l == nil)
 			continue;
+		ls = linebytes(l);
 		ln = lsz(l->n);
-		if (y == e->cy) {
-			if (e->cx > 0)
-				startx = prevutf8(e, e->cy, e->cx);
-			else
-				startx = ln;
-		} else {
-			startx = ln;
-		}
-		if (startx > ln)
-			startx = ln;
-		if (ln < patn)
+		/* Search strictly before the cursor on the current line. */
+		lim = (y == e->cy) ? e->cx : ln;
+		if (lim < 0)
+			lim = 0;
+		if (lim > ln)
+			lim = ln;
+		if (lim < patn)
 			continue;
-		if (startx > ln - patn)
-			startx = ln - patn;
+		startx = lim - patn;
 		for (x = startx; x >= 0; x--) {
-			if (memcmp(l->s + x, pat, (size_t)patn) == 0) {
+			if (memcmp(ls + x, pat, (size_t)patn) == 0) {
 				e->cy = y;
 				e->cx = x;
 				return 0;
@@ -3720,6 +3720,7 @@ searchbackward(Eek *e, const char *pat)
 		l = bufgetline(&e->b, y);
 		if (l == nil)
 			continue;
+		ls = linebytes(l);
 		lim = lsz(l->n);
 		if (lim < patn)
 			continue;
@@ -3735,7 +3736,7 @@ searchbackward(Eek *e, const char *pat)
 			startx = lim - patn;
 		}
 		for (x = startx; x >= 0; x--) {
-			if (memcmp(l->s + x, pat, (size_t)patn) == 0) {
+			if (memcmp(ls + x, pat, (size_t)patn) == 0) {
 				e->cy = y;
 				e->cx = x;
 				return 0;
