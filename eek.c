@@ -26,8 +26,8 @@ static void yclear(Eek *e);
 static int yset(Eek *e, const char *s, long n, int linewise);
 static int yappend(Eek *e, const char *s, long n);
 static int yanklines(Eek *e, long at, long n);
-static int insertbytes(Eek *e, const char *s, long n);
-static int insertnl(Eek *e);
+int insertbytes(Eek *e, const char *s, long n);
+int insertnl(Eek *e);
 static int delat_yank(Eek *e, long n);
 static void wordtarget(Eek *e, long *ty, long *tx);
 static void endwordtarget(Eek *e, long *ty, long *tx);
@@ -67,11 +67,11 @@ static int tabmove(Eek *e, long to);
 static int subexec(Eek *e, char *line);
 static void vsellines(Eek *e, long *y0, long *y1);
 
-static int undopush(Eek *e);
+int undopush(Eek *e);
 static void undofree(Eek *e);
 static void undopop(Eek *e);
 
-static void normalfixcursor(Eek *e);
+void normalfixcursor(Eek *e);
 
 static long rxfromcx(Eek *e, long y, long cx);
 static long cxfromrx(Eek *e, long y, long rx);
@@ -3036,7 +3036,7 @@ setmode(Eek *e, int mode)
  * Returns:
  *  - void.
  */
-static void
+void
 normalfixcursor(Eek *e)
 {
 	long len;
@@ -5427,7 +5427,7 @@ draw(Eek *e)
  * Returns:
  *  0 on success, -1 on failure.
  */
-static int
+int
 insertbytes(Eek *e, const char *s, long n)
 {
 	Line *l;

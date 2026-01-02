@@ -261,6 +261,13 @@ lsz(size_t n)
 	return (long)n;
 }
 
+/* eek.c internal helpers used by apply.c */
+int undopush(Eek *e);
+int delrange(Eek *e, long y0, long x0, long y1, long x1, int yank);
+int insertbytes(Eek *e, const char *s, long n);
+int insertnl(Eek *e);
+void normalfixcursor(Eek *e);
+
 /*
  * clamp clamps v into [lo, hi].
  */
