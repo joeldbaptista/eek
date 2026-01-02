@@ -6302,11 +6302,25 @@ page(Eek *e, Args *a)
 	long rows;
 	long step;
 	long delta;
+	long nline;
 
 	r = argsat(a, 0, 0);
 	npage = countval(e->count);
 	rows = curwinrows(e);
 	step = (rows > 1) ? (rows - 1) : 1;
+	nline = e->b.nline > 0 ? lsz(e->b.nline) : 0;
+
+	/*
+	 * Page-down: if we're already within one window of EOF, don't move.
+	 * This avoids jumping to the end when the remaining lines fit on screen.
+	 */
+	if (r == ')' && nline > 0) {
+		if ((nline - 1) - e->cy < rows) {
+			e->count = 0;
+			e->opcount = 0;
+			return 0;
+		}
+	}
 	delta = step * npage;
 	if (r == '(')
 		delta = -delta;
