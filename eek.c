@@ -4945,6 +4945,7 @@ int
 insertnl(Eek *e)
 {
 	Line *l;
+	const char *ls;
 	long tailn;
 	long ln;
 
@@ -4954,14 +4955,20 @@ insertnl(Eek *e)
 	l = bufgetline(&e->b, e->cy);
 	if (l == nil)
 		return -1;
+	/* Ensure we copy logical bytes, not the gap region. */
+	ls = linebytes(l);
 	ln = lsz(l->n);
 	if (e->cx > ln)
 		e->cx = ln;
 
 	tailn = ln - e->cx;
-	if (bufinsertline(&e->b, e->cy + 1, l->s + e->cx, tailn) < 0)
+	if (bufinsertline(&e->b, e->cy + 1, ls + e->cx, (size_t)tailn) < 0)
 		return -1;
-	if (tailn > 0 && linedelrange(l, e->cx, tailn) < 0)
+	/* bufinsertline may move b->line, so refresh l before mutating it. */
+	l = bufgetline(&e->b, e->cy);
+	if (l == nil)
+		return -1;
+	if (tailn > 0 && linedelrange(l, e->cx, (size_t)tailn) < 0)
 		return -1;
 	e->cy++;
 	e->cx = 0;
