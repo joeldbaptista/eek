@@ -1126,7 +1126,8 @@ subexec(Eek *e, char *line)
 	}
 
 	reok = 0;
-	if (regcomp(&re, old, REG_EXTENDED) != 0) {
+	/* Use basic regex (vi-like): '{' is literal unless escaped. */
+	if (regcomp(&re, old, 0) != 0) {
 		setmsg(e, "Bad regex");
 		return 1;
 	}
