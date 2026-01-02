@@ -262,11 +262,16 @@ lsz(size_t n)
 }
 
 /* eek.c internal helpers used by apply.c */
+void setmsg(Eek *e, const char *fmt, ...);
 int undopush(Eek *e);
 int delrange(Eek *e, long y0, long x0, long y1, long x1, int yank);
 int insertbytes(Eek *e, const char *s, long n);
 int insertnl(Eek *e);
 void normalfixcursor(Eek *e);
+
+void vselbounds(Eek *e, long *sy, long *sx, long *ey, long *ex);
+void vselblockbounds(Eek *e, long *y0, long *y1, long *rx0, long *rx1);
+long cxfromrx(Eek *e, long y, long rx);
 
 /*
  * clamp clamps v into [lo, hi].

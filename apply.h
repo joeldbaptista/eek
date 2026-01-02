@@ -7,7 +7,7 @@
  * Users register apply functions by defining applytab[] in config.h.
  */
 
-typedef struct Eek Eek;
+struct Eek;
 
 typedef int (*ApplyFn)(const char *in, long inlen, int argc, char **argv,
 			char **out, long *outlen);
@@ -22,6 +22,6 @@ struct Apply {
  * applyexec executes ":apply ..." with argline being everything after the
  * "apply" token.
  */
-int applyexec(Eek *e, const char *argline);
+int applyexec(struct Eek *e, const char *argline);
 
 #endif /* APPLY_H */
