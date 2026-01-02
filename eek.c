@@ -490,8 +490,7 @@ mapapply(Eek *e, int mode, long lhs)
 			rv = malloc((size_t)cap * sizeof rv[0]);
 			if (rv == nil)
 				return 0;
-			nr = 0;
-			for (; n > 0; ) {
+			for (nr = 0; n > 0; ) {
 				r = utf8dec1(s, n, &adv);
 				if (adv <= 0)
 					break;
@@ -3834,7 +3833,7 @@ readfileinsert(Eek *e, const char *path, long at)
 
 	nins = 0;
 	pos = at;
-	for (; (n = getline(&line, &cap, fp)) >= 0; ) {
+	while ((n = getline(&line, &cap, fp)) >= 0) {
 		for (; n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'); n--)
 			;
 		if (bufinsertline(&e->b, pos, line, (long)n) < 0) {
@@ -3940,7 +3939,7 @@ runinsert(Eek *e, const char *cmd)
 	nins++;
 
 	/* Insert remaining stdout lines as new buffer lines. */
-	for (; (n = getline(&line, &cap, fp)) >= 0; ) {
+	while ((n = getline(&line, &cap, fp)) >= 0) {
 		for (; n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'); n--)
 			;
 		if (insertnl(e) < 0) {
@@ -4469,7 +4468,7 @@ cmdexec(Eek *e)
 		if (arr != nil) {
 			i = 0;
 			collectwins(e->layout, arr, &i);
-			for (; i-- > 0; ) {
+			while (i-- > 0) {
 				arr[i]->cx = 0;
 				arr[i]->cy = 0;
 				arr[i]->rowoff = 0;
@@ -4700,8 +4699,7 @@ draw(Eek *e)
 		sp = 0;
 		stack[sp] = e->layout;
 		rstack[sp] = root;
-		sp++;
-		for (; sp-- > 0; ) {
+		for (sp++; sp-- > 0; ) {
 			nd = stack[sp];
 			rr = rstack[sp];
 			if (nd == nil)
