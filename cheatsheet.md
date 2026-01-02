@@ -283,6 +283,14 @@ Run shell command (`:run`):
 - Insertion point: at the cursor position in the current line.
 - Multi-line stdout is inserted as multiple lines; the original tail of the line is preserved after the inserted output.
 
+Apply function (`:apply`):
+
+- `:apply <func-name> [args...]` applies a user-registered function to text.
+- With a VISUAL selection active, the selection is treated as one contiguous string (may contain `\n`) and is replaced with the function output.
+- With no VISUAL selection, the function is applied to the entire buffer.
+- Arguments are parsed in a shell-like way (quotes and backslash escapes).
+- In block/column VISUAL, the function is applied **per line** to the selected rectangle slice on that line (output must not contain newlines).
+
 Remaps (`:map`, `:unmap`):
 
 - `:map <lhs> <rhs>` maps a **single character** `<lhs>` to an injected key sequence `<rhs>`.

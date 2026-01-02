@@ -5,6 +5,7 @@ include config.mk
 BIN = eek
 OBJ = \
 	eek.o \
+	apply.o \
 	motion.o \
 	buf.o \
 	term.o \
