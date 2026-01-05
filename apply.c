@@ -68,6 +68,7 @@ parseargv(const char *s, char ***argvout, int *argcout)
 	char *tok;
 	long tokn;
 	long tokcap;
+	long ncap;
 	char *tp;
 	char c;
 	char q;
@@ -118,7 +119,6 @@ parseargv(const char *s, char ***argvout, int *argcout)
 			}
 
 			if (tokn + 1 > tokcap) {
-				long ncap;
 				ncap = tokcap > 0 ? tokcap * 2 : 32;
 				for (; tokn + 1 > ncap; ncap *= 2)
 					;
@@ -335,6 +335,15 @@ applyexec(Eek *e, const char *argline)
 	long sy, sx, ey, ex;
 	long lasty;
 	long starty, startx;
+	long y0, y1;
+	long rx0, rx1;
+	long y;
+	Line *l;
+	long cx0, cx1;
+	long ln;
+	const char *ls;
+	char *seg;
+	long segn;
 
 	if (e == nil)
 		return -1;
@@ -363,16 +372,6 @@ applyexec(Eek *e, const char *argline)
 
 	/* Block/column VISUAL: apply per-line within the selected rectangle. */
 	if (e->cmdkeepvisual && e->vmode == Visualblock) {
-		long y0, y1;
-		long rx0, rx1;
-		long y;
-		Line *l;
-		long cx0, cx1;
-		long ln;
-		const char *ls;
-		char *seg;
-		long segn;
-
 		vselblockbounds(e, &y0, &y1, &rx0, &rx1);
 		if (y0 < 0)
 			y0 = 0;
@@ -542,6 +541,7 @@ apply_space_between(const char *in, long inlen, int argc, char **argv, char **ou
 	long cap;
 	long n;
 	char *buf;
+	char *p;
 	int needspace;
 
 	if (out)
@@ -582,7 +582,6 @@ apply_space_between(const char *in, long inlen, int argc, char **argv, char **ou
 			needspace = (n > 0 && buf[n - 1] != '\n');
 			if (needspace) {
 				if (n + 1 > cap) {
-					char *p;
 					cap *= 2;
 					p = realloc(buf, (size_t)cap);
 					if (p == nil) {
@@ -595,7 +594,6 @@ apply_space_between(const char *in, long inlen, int argc, char **argv, char **ou
 			}
 
 			if (n + delimlen + 1 > cap) {
-				char *p;
 				for (; n + delimlen + 1 > cap; cap *= 2)
 					;
 				p = realloc(buf, (size_t)cap);
@@ -616,7 +614,6 @@ apply_space_between(const char *in, long inlen, int argc, char **argv, char **ou
 			/* Add one space after delimiter unless end-of-input or newline. */
 			if (i < inlen && in[i] != '\n') {
 				if (n + 1 > cap) {
-					char *p;
 					cap *= 2;
 					p = realloc(buf, (size_t)cap);
 					if (p == nil) {
@@ -632,7 +629,6 @@ apply_space_between(const char *in, long inlen, int argc, char **argv, char **ou
 
 		/* Copy one byte; this keeps the example byte-oriented. */
 		if (n + 1 > cap) {
-			char *p;
 			cap *= 2;
 			p = realloc(buf, (size_t)cap);
 			if (p == nil) {
