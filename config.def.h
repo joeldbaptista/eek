@@ -3,6 +3,7 @@
 enum {
 	TABSTOP = 8,
 	LINE_MIN_CAP = 32,
+	RESIZE_PAUSE_MS = 50,
 };
 
 /* cursor shapes (DECSCUSR: ESC [ Ps SP q) */

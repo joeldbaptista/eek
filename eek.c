@@ -3516,7 +3516,7 @@ drawstatus(Eek *e)
 	}
 	if (n < 0)
 		n = 0;
-	termwrite(&e->t, "\x1b[7m", 4);
+	termwrite(&e->t, "\x1b[97;40m", 8);
 	termwrite(&e->t, buf, n);
 	for (; n < e->t.col; n++)
 		termwrite(&e->t, " ", 1);
@@ -7352,6 +7352,7 @@ main(int argc, char **argv)
 	int gut;
 	long textcols;
 	long i;
+	int krc;
 
 	memset(&e, 0, sizeof e);
 	bufinit(&e.b);
@@ -7377,6 +7378,8 @@ main(int argc, char **argv)
 
 	for (;;) {
 		if (termresized()) {
+			if (RESIZE_PAUSE_MS > 0)
+				usleep((unsigned int)(RESIZE_PAUSE_MS * 1000));
 			termgetwinsz(&e.t);
 			/* Clamp the active window cursor after a resize. */
 			winclamp(&e, e.curwin);
@@ -7401,8 +7404,11 @@ main(int argc, char **argv)
 			break;
 		if (!feedpop(&e, &kev)) {
 			memset(&kev, 0, sizeof kev);
-			if (keyread(&e.t, &kev.k) < 0)
+			krc = keyread(&e.t, &kev.k);
+			if (krc < 0)
 				break;
+			if (krc > 0)
+				continue;
 			kev.nomap = 0;
 			kev.src = Keysrcuser;
 		}

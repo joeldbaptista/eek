@@ -18,6 +18,7 @@ static int pushn;
  *
  * Returns:
  *  - 0 on success (b is set).
+ *  - 1 if interrupted by EINTR.
  *  - -1 on EOF.
  */
 static int
@@ -37,7 +38,7 @@ readbyte(int fd, unsigned char *b)
 		if (n > 0)
 			break;
 		if (errno == EINTR)
-			continue;
+			return 1;
 		die("read: %s", strerror(errno));
 	}
 	return 0;
@@ -97,7 +98,7 @@ readbyte_timeout(int fd, unsigned char *b, int timeoutms)
 		r = select(fd + 1, &rfds, nil, nil, &tv);
 		if (r < 0) {
 			if (errno == EINTR)
-				continue;
+				return 1;
 			die("select: %s", strerror(errno));
 		}
 		if (r == 0)
@@ -106,8 +107,6 @@ readbyte_timeout(int fd, unsigned char *b, int timeoutms)
 	}
 
 	rc = readbyte(fd, b);
-	if (rc == 1)
-		return 0;
 	return rc;
 }
 
@@ -120,6 +119,7 @@ readbyte_timeout(int fd, unsigned char *b, int timeoutms)
  *
  * Returns:
  *  - 0 on success.
+ *  - 1 if interrupted by EINTR (no key produced).
  *  - -1 on EOF.
  */
 int
@@ -133,11 +133,17 @@ keyread(Term *t, Key *k)
 	k->value = 0;
 
 	rc = readbyte(t->fdin, &b);
+	if (rc == 1)
+		return 1;
 	if (rc < 0)
 		return -1;
 
 	if (b == 0x1b) {
 		rc = readbyte_timeout(t->fdin, &b1, 25);
+		if (rc == 1) {
+			unreadbyte(b);
+			return 1;
+		}
 		if (rc == 2) {
 			k->kind = Keyesc;
 			return 0;
@@ -152,6 +158,11 @@ keyread(Term *t, Key *k)
 			return 0;
 		}
 		rc = readbyte_timeout(t->fdin, &b2, 25);
+		if (rc == 1) {
+			unreadbyte(b1);
+			unreadbyte(b);
+			return 1;
+		}
 		if (rc == 2) {
 			unreadbyte('[');
 			k->kind = Keyesc;
@@ -195,27 +206,55 @@ keyread(Term *t, Key *k)
 	r = 0xfffd;
 	if ((b & 0xe0) == 0xc0) {
 		rc = readbyte(t->fdin, &b1);
+		if (rc == 1) {
+			unreadbyte(b);
+			return 1;
+		}
 		if (rc < 0)
 			return -1;
 		if ((b1 & 0xc0) == 0x80)
 			r = ((b & 0x1f) << 6) | (b1 & 0x3f);
 	} else if ((b & 0xf0) == 0xe0) {
 		rc = readbyte(t->fdin, &b1);
+		if (rc == 1) {
+			unreadbyte(b);
+			return 1;
+		}
 		if (rc < 0)
 			return -1;
 		rc = readbyte(t->fdin, &b2);
+		if (rc == 1) {
+			unreadbyte(b1);
+			unreadbyte(b);
+			return 1;
+		}
 		if (rc < 0)
 			return -1;
 		if ((b1 & 0xc0) == 0x80 && (b2 & 0xc0) == 0x80)
 			r = ((b & 0x0f) << 12) | ((b1 & 0x3f) << 6) | (b2 & 0x3f);
 	} else if ((b & 0xf8) == 0xf0) {
 		rc = readbyte(t->fdin, &b1);
+		if (rc == 1) {
+			unreadbyte(b);
+			return 1;
+		}
 		if (rc < 0)
 			return -1;
 		rc = readbyte(t->fdin, &b2);
+		if (rc == 1) {
+			unreadbyte(b1);
+			unreadbyte(b);
+			return 1;
+		}
 		if (rc < 0)
 			return -1;
 		rc = readbyte(t->fdin, &b3);
+		if (rc == 1) {
+			unreadbyte(b2);
+			unreadbyte(b1);
+			unreadbyte(b);
+			return 1;
+		}
 		if (rc < 0)
 			return -1;
 		if ((b1 & 0xc0) == 0x80 && (b2 & 0xc0) == 0x80 && (b3 & 0xc0) == 0x80)
